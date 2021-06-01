@@ -88,6 +88,12 @@ struct led_hw_trigger_type {
 	int dummy;
 };
 
+enum led_blink_modes {
+	LED_BLINK_SW_CONTROLLED = 0x0,
+	LED_BLINK_HW_CONTROLLED,
+	LED_BLINK_SWHW_CONTROLLED,
+};
+
 struct led_classdev {
 	const char		*name;
 	unsigned int brightness;
@@ -175,6 +181,24 @@ struct led_classdev {
 
 	/* LEDs that have private triggers have this set */
 	struct led_hw_trigger_type	*trigger_type;
+
+	/* This report the supported blink_mode. The driver should report the
+	 * correct LED capabilities.
+	 * With this set to LED_BLINK_HW_CONTROLLED, LED is always in offload
+	 * mode and triggers can't be simulated by software.
+	 * If the led is LED_BLINK_HW_CONTROLLED, status/start/stop function
+	 * are optional.
+	 * By default LED_BLINK_SW_CONTROLLED is set as blink_mode.
+	 */
+	enum led_blink_modes	blink_mode;
+	/* Ask the LED driver if hardware mode is enabled or not */
+	bool			(*hw_control_status)(struct led_classdev *led_cdev);
+	/* Set LED in hardware mode */
+	int			(*hw_control_start)(struct led_classdev *led_cdev);
+	/* Disable hardware mode for LED. It's advised to the LED driver to put it to
+	 * the old status but that is not mandatory and also putting it off is accepted.
+	 */
+	int			(*hw_control_stop)(struct led_classdev *led_cdev);
 #endif
 
 #ifdef CONFIG_LEDS_BRIGHTNESS_HW_CHANGED
@@ -242,7 +266,6 @@ extern struct led_classdev *of_led_get(struct device_node *np, int index);
 extern void led_put(struct led_classdev *led_cdev);
 struct led_classdev *__must_check devm_of_led_get(struct device *dev,
 						  int index);
-
 /**
  * led_blink_set - set blinking with software fallback
  * @led_cdev: the LED to start blinking
@@ -377,11 +400,25 @@ static inline bool led_sysfs_is_disabled(struct led_classdev *led_cdev)
 
 #define TRIG_NAME_MAX 50
 
+enum led_trigger_blink_supported_modes {
+	LED_TRIGGER_SW_ONLY = LED_BLINK_SW_CONTROLLED,
+	LED_TRIGGER_HW_ONLY = LED_BLINK_HW_CONTROLLED,
+	LED_TRIGGER_SWHW = LED_BLINK_SWHW_CONTROLLED,
+};
+
 struct led_trigger {
 	/* Trigger Properties */
 	const char	 *name;
 	int		(*activate)(struct led_classdev *led_cdev);
 	void		(*deactivate)(struct led_classdev *led_cdev);
+
+	/* Declare if the Trigger supports hardware control to
+	 * offload triggers or supports only software control.
+	 * A trigger can also declare support for hardware control
+	 * if its task is to only configure LED blink modes and expose
+	 * them in sysfs.
+	 */
+	enum led_trigger_blink_supported_modes supported_blink_modes;
 
 	/* LED-private triggers have this set */
 	struct led_hw_trigger_type *trigger_type;
