@@ -200,9 +200,69 @@ The LED must implement 3 main API:
 		It's advised to the driver to put the LED in the old state
 		but this is not enforcerd and putting the LED off is also accepted.
 
+- hw_control_configure():
+		This will be used to configure the various blink modes LED support
+		in hardware mode.
+
 With LED_BLINK_HW_CONTROLLED blink_mode hw_control_status/start/stop is optional
 and any software only trigger will reject activation as the LED supports only
 hardware mode.
+
+Where a trigger has support for hardware controlled blink modes,
+hw_control_configure() will be used to check whether a particular blink mode
+is supported and configure the blink mode using various specific command.
+
+hw_control_configure() takes 3 arguments:
+
+- struct led_classdev *led_cdev
+
+- unsigned long flag:
+		This can be used for multiple purpose based on passed command
+		in the 3rd argument of this function.
+		It may be NULL if the 3rd argument doesn't require them.
+
+		The unsigned long flag is specific to the trigger and its meaning
+		change across different triggers.
+		For this exact reason LED driver needs to declare explicit support
+		for the trigger supporting hardware blink mode.
+		The driver should return -EOPNOTSUPP if asked to enter in hardware
+		blink mode with an unsupported trigger.
+
+		The LED driver may also report -EOPNOTSUPP if the requested flag
+		are rejected and can't be handled in hw blink mode by the LED.
+
+		Flag can both be a single blink mode or a set of multiple blink
+		mode. LED driver must be able to handle both cases.
+
+- enum led_blink_hw_cmd cmd:
+		This is used to request to the LED driver various operation.
+
+		They may return -EOPNOTSUPP or -EINVAL based on the provided flags.
+
+hw_control_configure() supports the following cmd:
+
+- LED_BLINK_HW_ENABLE:
+		enable the blink mode requested in flag. Returns 0 or a negative
+		error.
+
+- LED_BLINK_HW_DISABLE:
+		disable the blink mode requested in flag. Returns 0 or a negative
+		error.
+
+- LED_BLINK_HW_STATUS:
+		read the status of the blink mode requested in flag. Return a mask
+		of the enabled blink mode requested in flag or a negative error.
+
+- LED_BLINK_HW_SUPPORTED:
+		ask the LED driver if the blink mode requested in flag is supported.
+		Return 1 if supported or a negative error in any other case.
+
+- LED_BLINK_HW_RESET:
+		reset any blink mode currently active. Value in flag are ignored.
+		Return 0 or a negative error.
+
+		LED driver can set the blink mode to a default state or keep everything
+		disabled.
 
 Known Issues
 ============

@@ -94,6 +94,14 @@ enum led_blink_modes {
 	LED_BLINK_SWHW_CONTROLLED,
 };
 
+enum led_blink_hw_cmd {
+	LED_BLINK_HW_ENABLE, /* Enable the hardware blink mode */
+	LED_BLINK_HW_DISABLE, /* Disable the hardware blink mode */
+	LED_BLINK_HW_STATUS, /* Read the status of the hardware blink mode */
+	LED_BLINK_HW_SUPPORTED, /* Ask the driver if the hardware blink mode is supported */
+	LED_BLINK_HW_RESET, /* Reset any hardware blink active */
+};
+
 struct led_classdev {
 	const char		*name;
 	unsigned int brightness;
@@ -199,6 +207,17 @@ struct led_classdev {
 	 * the old status but that is not mandatory and also putting it off is accepted.
 	 */
 	int			(*hw_control_stop)(struct led_classdev *led_cdev);
+	/* This will be used to configure the various blink modes LED support in hardware
+	 * mode.
+	 * The LED driver require to support the active trigger and will elaborate the
+	 * unsigned long flag and do the operation based on the provided cmd.
+	 * Current operation are enable,disable,supported and status.
+	 * A trigger will use this to enable or disable the asked blink mode, check the
+	 * status of the blink mode or ask if the blink mode can run in hardware mode.
+	 */
+	int			(*hw_control_configure)(struct led_classdev *led_cdev,
+							unsigned long flag,
+							enum led_blink_hw_cmd cmd);
 #endif
 
 #ifdef CONFIG_LEDS_BRIGHTNESS_HW_CHANGED
@@ -472,6 +491,30 @@ static inline void *led_get_trigger_data(struct led_classdev *led_cdev)
 {
 	return led_cdev->trigger_data;
 }
+
+#ifdef CONFIG_LEDS_HARDWARE_CONTROL
+static inline bool led_trigger_blink_mode_is_supported(struct led_classdev *led_cdev,
+						       unsigned long flag)
+{
+	int ret;
+
+	/* Sanity check: make sure led support hw mode */
+	if (led_cdev->blink_mode == LED_BLINK_SW_CONTROLLED)
+		return false;
+
+	ret = led_cdev->hw_control_configure(led_cdev, flag, LED_BLINK_HW_SUPPORTED);
+	if (ret > 0)
+		return true;
+
+	return false;
+}
+#else
+static inline bool led_trigger_blink_mode_is_supported(struct led_classdev *led_cdev,
+						       unsigned long flag)
+{
+	return false;
+}
+#endif
 
 /**
  * led_trigger_rename_static - rename a trigger
