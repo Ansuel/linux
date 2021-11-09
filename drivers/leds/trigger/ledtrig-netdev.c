@@ -28,7 +28,9 @@
  * Configurable sysfs attributes:
  *
  * device_name - network device name to monitor
+ *               (not supported in hw mode)
  * interval - duration of LED blink, in milliseconds
+ *            (not supported in hw mode)
  * link -  LED's normal state reflects whether the link is up
  *         (has carrier) or not
  * tx -  LED blinks on transmitted data
@@ -37,6 +39,7 @@
  */
 
 struct led_netdev_data {
+	enum led_blink_modes blink_mode;
 	spinlock_t lock;
 
 	struct delayed_work work;
@@ -53,11 +56,111 @@ struct led_netdev_data {
 	bool carrier_link_up;
 };
 
+struct netdev_led_attr_detail {
+	char *name;
+	bool hardware_only;
+	enum led_trigger_netdev_modes bit;
+};
+
+static struct netdev_led_attr_detail attr_details[] = {
+	{ .name = "link", .bit = TRIGGER_NETDEV_LINK},
+	{ .name = "tx", .bit = TRIGGER_NETDEV_TX},
+	{ .name = "rx", .bit = TRIGGER_NETDEV_RX},
+};
+
+static bool validate_baseline_state(struct led_netdev_data *trigger_data)
+{
+	struct led_classdev *led_cdev = trigger_data->led_cdev;
+	unsigned long hw_blink_modes = 0, sw_blink_modes = 0;
+	struct netdev_led_attr_detail *detail;
+	bool force_sw = false;
+	int i;
+
+	/* Check if we need to force sw mode for some feature */
+	if (trigger_data->net_dev)
+		force_sw = true;
+
+	/* Hardware only controlled LED can't run in sw mode */
+	if (force_sw && led_cdev->blink_mode == LED_BLINK_HW_CONTROLLED)
+		return false;
+
+	/* Check each attr and make sure they are all supported */
+	for (i = 0; i < ARRAY_SIZE(attr_details); i++) {
+		detail = &attr_details[i];
+
+		/* Mode not active, skip */
+		if (!test_bit(detail->bit, &trigger_data->mode))
+			continue;
+
+		/* Hardware only mode enabled on software controlled LED */
+		if ((force_sw || led_cdev->blink_mode == LED_BLINK_SW_CONTROLLED) &&
+		    detail->hardware_only)
+			return false;
+
+		/* Check if the mode supports hardware mode */
+		if (led_cdev->blink_mode != LED_BLINK_SW_CONTROLLED) {
+			/* Track modes that should be handled by sw */
+			if (force_sw) {
+				sw_blink_modes |= BIT(detail->bit);
+				continue;
+			}
+
+			/* Check if the mode is supported */
+			if (led_trigger_blink_mode_is_supported(led_cdev, BIT(detail->bit)))
+				hw_blink_modes |= BIT(detail->bit);
+		} else {
+			sw_blink_modes |= BIT(detail->bit);
+		}
+	}
+
+	/* We can't run modes handled by both software and hardware. */
+	if (hw_blink_modes && sw_blink_modes)
+		return false;
+
+	/* Make sure we support each requested mode */
+	if (hw_blink_modes && hw_blink_modes != trigger_data->mode)
+		return false;
+
+	/* Modes are valid. Decide now the running mode to later
+	 * set the baseline.
+	 */
+	if (sw_blink_modes)
+		trigger_data->blink_mode = LED_BLINK_SW_CONTROLLED;
+	else
+		trigger_data->blink_mode = LED_BLINK_HW_CONTROLLED;
+
+	return true;
+}
+
 static void set_baseline_state(struct led_netdev_data *trigger_data)
 {
+	int i;
 	int current_brightness;
+	struct netdev_led_attr_detail *detail;
 	struct led_classdev *led_cdev = trigger_data->led_cdev;
 
+	/* Modes already validated. Directly apply hw trigger modes */
+	if (trigger_data->blink_mode == LED_BLINK_HW_CONTROLLED) {
+		/* We are refreshing the blink modes. Reset them */
+		led_cdev->hw_control_configure(led_cdev, 0,
+					       LED_BLINK_HW_RESET);
+
+		for (i = 0; i < ARRAY_SIZE(attr_details); i++) {
+			detail = &attr_details[i];
+
+			if (!test_bit(detail->bit, &trigger_data->mode))
+				continue;
+
+			led_cdev->hw_control_configure(led_cdev, BIT(detail->bit),
+						       LED_BLINK_HW_ENABLE);
+		}
+
+		led_cdev->hw_control_start(led_cdev);
+
+		return;
+	}
+
+	/* Handle trigger modes by software */
 	current_brightness = led_cdev->brightness;
 	if (current_brightness)
 		led_cdev->blink_brightness = current_brightness;
@@ -100,6 +203,8 @@ static ssize_t device_name_store(struct device *dev,
 				 size_t size)
 {
 	struct led_netdev_data *trigger_data = led_trigger_get_drvdata(dev);
+	char old_device_name[IFNAMSIZ];
+	struct net_device *old_net;
 
 	if (size >= IFNAMSIZ)
 		return -EINVAL;
@@ -108,11 +213,12 @@ static ssize_t device_name_store(struct device *dev,
 
 	spin_lock_bh(&trigger_data->lock);
 
-	if (trigger_data->net_dev) {
-		dev_put(trigger_data->net_dev);
-		trigger_data->net_dev = NULL;
-	}
+	/* Backup old device name and save old net */
+	old_net = trigger_data->net_dev;
+	trigger_data->net_dev = NULL;
+	memcpy(old_device_name, trigger_data->device_name, IFNAMSIZ);
 
+	/* Set the new device name */
 	memcpy(trigger_data->device_name, buf, size);
 	trigger_data->device_name[size] = 0;
 	if (size > 0 && trigger_data->device_name[size - 1] == '\n')
@@ -121,6 +227,21 @@ static ssize_t device_name_store(struct device *dev,
 	if (trigger_data->device_name[0] != 0)
 		trigger_data->net_dev =
 		    dev_get_by_name(&init_net, trigger_data->device_name);
+
+	if (!validate_baseline_state(trigger_data)) {
+		/* Restore old net_dev and device_name */
+		dev_put(trigger_data->net_dev);
+
+		/* Restore device settings */
+		trigger_data->net_dev = old_net;
+		memcpy(trigger_data->device_name, old_device_name, IFNAMSIZ);
+
+		spin_unlock_bh(&trigger_data->lock);
+		return -EINVAL;
+	}
+
+	/* Everything is ok. We can drop reference to the old net */
+	dev_put(old_net);
 
 	trigger_data->carrier_link_up = false;
 	if (trigger_data->net_dev != NULL)
@@ -159,7 +280,7 @@ static ssize_t netdev_led_attr_store(struct device *dev, const char *buf,
 				     size_t size, enum led_trigger_netdev_modes attr)
 {
 	struct led_netdev_data *trigger_data = led_trigger_get_drvdata(dev);
-	unsigned long state;
+	unsigned long state, old_mode = trigger_data->mode;
 	int ret;
 	int bit;
 
@@ -183,6 +304,12 @@ static ssize_t netdev_led_attr_store(struct device *dev, const char *buf,
 		set_bit(bit, &trigger_data->mode);
 	else
 		clear_bit(bit, &trigger_data->mode);
+
+	if (!validate_baseline_state(trigger_data)) {
+		/* Restore old mode on validation fail */
+		trigger_data->mode = old_mode;
+		return -EINVAL;
+	}
 
 	set_baseline_state(trigger_data);
 
@@ -220,6 +347,8 @@ static ssize_t interval_store(struct device *dev,
 			      size_t size)
 {
 	struct led_netdev_data *trigger_data = led_trigger_get_drvdata(dev);
+	int old_interval = atomic_read(&trigger_data->interval);
+	u32 old_mode = trigger_data->mode;
 	unsigned long value;
 	int ret;
 
@@ -228,12 +357,25 @@ static ssize_t interval_store(struct device *dev,
 		return ret;
 
 	/* impose some basic bounds on the timer interval */
-	if (value >= 5 && value <= 10000) {
-		cancel_delayed_work_sync(&trigger_data->work);
+	if (value < 5 || value > 10000)
+		return -EINVAL;
 
-		atomic_set(&trigger_data->interval, msecs_to_jiffies(value));
-		set_baseline_state(trigger_data);	/* resets timer */
+	/* With hw blink the blink interval is handled internally */
+	if (trigger_data->blink_mode == LED_BLINK_HW_CONTROLLED)
+		return -EINVAL;
+
+	cancel_delayed_work_sync(&trigger_data->work);
+
+	atomic_set(&trigger_data->interval, msecs_to_jiffies(value));
+
+	if (!validate_baseline_state(trigger_data)) {
+		/* Restore old interval on validation error */
+		atomic_set(&trigger_data->interval, old_interval);
+		trigger_data->mode = old_mode;
+		return -EINVAL;
 	}
+
+	set_baseline_state(trigger_data);	/* resets timer */
 
 	return size;
 }
@@ -368,13 +510,25 @@ static int netdev_trig_activate(struct led_classdev *led_cdev)
 	trigger_data->mode = 0;
 	atomic_set(&trigger_data->interval, msecs_to_jiffies(50));
 	trigger_data->last_activity = 0;
+	if (led_cdev->blink_mode != LED_BLINK_SW_CONTROLLED) {
+		/* With hw mode enabled reset any rule set by default */
+		if (led_cdev->hw_control_status(led_cdev)) {
+			rc = led_cdev->hw_control_configure(led_cdev, 0,
+							    LED_BLINK_HW_RESET);
+			if (rc)
+				goto err;
+		}
+	}
 
 	led_set_trigger_data(led_cdev, trigger_data);
 
 	rc = register_netdevice_notifier(&trigger_data->notifier);
 	if (rc)
-		kfree(trigger_data);
+		goto err;
 
+	return 0;
+err:
+	kfree(trigger_data);
 	return rc;
 }
 
@@ -394,6 +548,7 @@ static void netdev_trig_deactivate(struct led_classdev *led_cdev)
 
 static struct led_trigger netdev_led_trigger = {
 	.name = "netdev",
+	.supported_blink_modes = LED_TRIGGER_SWHW,
 	.activate = netdev_trig_activate,
 	.deactivate = netdev_trig_deactivate,
 	.groups = netdev_trig_groups,
