@@ -35,6 +35,8 @@
  *         (has carrier) or not
  * tx -  LED blinks on transmitted data
  * rx -  LED blinks on receive data
+ * available_mode - Display available mode and how they can be handled
+ *                  by the LED
  *
  */
 
@@ -382,12 +384,51 @@ static ssize_t interval_store(struct device *dev,
 
 static DEVICE_ATTR_RW(interval);
 
+static ssize_t available_mode_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct led_netdev_data *trigger_data = led_trigger_get_drvdata(dev);
+	struct netdev_led_attr_detail *detail;
+	bool support_hw_mode;
+	int i, len = 0;
+
+	for (i = 0; i < ARRAY_SIZE(attr_details); i++) {
+		detail = &attr_details[i];
+		support_hw_mode = led_trigger_blink_mode_is_supported(trigger_data->led_cdev,
+								      BIT(detail->bit));
+
+		len += sprintf(buf + len, "%s ", detail->name);
+
+		if (detail->hardware_only) {
+			if (trigger_data->net_dev || !support_hw_mode)
+				len += sprintf(buf + len, "[unavailable]");
+			else
+				len += sprintf(buf + len, "[hardware]");
+		} else {
+			len += sprintf(buf + len, "[software]");
+
+			if (support_hw_mode && !trigger_data->net_dev)
+				len += sprintf(buf + len, "[hardware]");
+		}
+
+		if (test_bit(detail->bit, &trigger_data->mode))
+			len += sprintf(buf + len, "[on]");
+
+		len += sprintf(buf + len, "\n");
+	}
+
+	return len;
+}
+
+static DEVICE_ATTR_RO(available_mode);
+
 static struct attribute *netdev_trig_attrs[] = {
 	&dev_attr_device_name.attr,
 	&dev_attr_link.attr,
 	&dev_attr_rx.attr,
 	&dev_attr_tx.attr,
 	&dev_attr_interval.attr,
+	&dev_attr_available_mode.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(netdev_trig);
