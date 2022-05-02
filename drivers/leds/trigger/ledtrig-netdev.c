@@ -33,6 +33,17 @@
  *            (not supported in hw mode)
  * link -  LED's normal state reflects whether the link is up
  *         (has carrier) or not
+ * link_10 - LED's normal state reflects whether the link is
+ *           up and at 10mbps speed (hardware only)
+ * link_100 - LED's normal state reflects whether the link is
+ *            up and at 100mbps speed (hardware only)
+ * link_1000 - LED's normal state reflects whether the link is
+ *             up and at 1000mbps speed (hardware only)
+ * half_duplex - LED's normal state reflects whether the link is
+ *               up and hafl duplex (hardware only)
+ * full_duplex - LED's normal state reflects whether the link is
+ *               up and full duplex (hardware only)
+ * activity - LED's blinks on transmitted or received data (hardware only)
  * tx -  LED blinks on transmitted data
  * rx -  LED blinks on receive data
  * available_mode - Display available mode and how they can be handled
@@ -66,6 +77,12 @@ struct netdev_led_attr_detail {
 
 static struct netdev_led_attr_detail attr_details[] = {
 	{ .name = "link", .bit = TRIGGER_NETDEV_LINK},
+	{ .name = "link_10", .hardware_only = true, .bit = TRIGGER_NETDEV_LINK_10},
+	{ .name = "link_100", .hardware_only = true, .bit = TRIGGER_NETDEV_LINK_100},
+	{ .name = "link_1000", .hardware_only = true, .bit = TRIGGER_NETDEV_LINK_1000},
+	{ .name = "half_duplex", .hardware_only = true, .bit = TRIGGER_NETDEV_HALF_DUPLEX},
+	{ .name = "full_duplex", .hardware_only = true, .bit = TRIGGER_NETDEV_FULL_DUPLEX},
+	{ .name = "activity", .hardware_only = true, .bit = TRIGGER_NETDEV_ACTIVITY },
 	{ .name = "tx", .bit = TRIGGER_NETDEV_TX},
 	{ .name = "rx", .bit = TRIGGER_NETDEV_RX},
 };
@@ -121,6 +138,23 @@ static bool validate_baseline_state(struct led_netdev_data *trigger_data)
 
 	/* Make sure we support each requested mode */
 	if (hw_blink_modes && hw_blink_modes != trigger_data->mode)
+		return false;
+
+	/* Check conflicts single rx or tx can't be active if activity is
+	 * active.
+	 */
+	if (test_bit(TRIGGER_NETDEV_ACTIVITY, &hw_blink_modes) &&
+	    (test_bit(TRIGGER_NETDEV_TX, &hw_blink_modes) ||
+	     test_bit(TRIGGER_NETDEV_RX, &hw_blink_modes)))
+		return false;
+
+	/* Check conflicts single link speed can't be active if link is
+	 * active.
+	 */
+	if (test_bit(TRIGGER_NETDEV_LINK, &hw_blink_modes) &&
+	    (test_bit(TRIGGER_NETDEV_LINK_10, &hw_blink_modes) ||
+	     test_bit(TRIGGER_NETDEV_LINK_100, &hw_blink_modes) ||
+	     test_bit(TRIGGER_NETDEV_LINK_1000, &hw_blink_modes)))
 		return false;
 
 	/* Modes are valid. Decide now the running mode to later
@@ -267,6 +301,12 @@ static ssize_t netdev_led_attr_show(struct device *dev, char *buf,
 
 	switch (attr) {
 	case TRIGGER_NETDEV_LINK:
+	case TRIGGER_NETDEV_LINK_10:
+	case TRIGGER_NETDEV_LINK_100:
+	case TRIGGER_NETDEV_LINK_1000:
+	case TRIGGER_NETDEV_HALF_DUPLEX:
+	case TRIGGER_NETDEV_FULL_DUPLEX:
+	case TRIGGER_NETDEV_ACTIVITY:
 	case TRIGGER_NETDEV_TX:
 	case TRIGGER_NETDEV_RX:
 		bit = attr;
@@ -292,6 +332,12 @@ static ssize_t netdev_led_attr_store(struct device *dev, const char *buf,
 
 	switch (attr) {
 	case TRIGGER_NETDEV_LINK:
+	case TRIGGER_NETDEV_LINK_10:
+	case TRIGGER_NETDEV_LINK_100:
+	case TRIGGER_NETDEV_LINK_1000:
+	case TRIGGER_NETDEV_HALF_DUPLEX:
+	case TRIGGER_NETDEV_FULL_DUPLEX:
+	case TRIGGER_NETDEV_ACTIVITY:
 	case TRIGGER_NETDEV_TX:
 	case TRIGGER_NETDEV_RX:
 		bit = attr;
@@ -332,6 +378,12 @@ static ssize_t netdev_led_attr_store(struct device *dev, const char *buf,
 	static DEVICE_ATTR_RW(trigger_name)
 
 DEFINE_NETDEV_TRIGGER(link, TRIGGER_NETDEV_LINK);
+DEFINE_NETDEV_TRIGGER(link_10, TRIGGER_NETDEV_LINK_10);
+DEFINE_NETDEV_TRIGGER(link_100, TRIGGER_NETDEV_LINK_100);
+DEFINE_NETDEV_TRIGGER(link_1000, TRIGGER_NETDEV_LINK_1000);
+DEFINE_NETDEV_TRIGGER(half_duplex, TRIGGER_NETDEV_HALF_DUPLEX);
+DEFINE_NETDEV_TRIGGER(full_duplex, TRIGGER_NETDEV_FULL_DUPLEX);
+DEFINE_NETDEV_TRIGGER(activity, TRIGGER_NETDEV_ACTIVITY);
 DEFINE_NETDEV_TRIGGER(tx, TRIGGER_NETDEV_TX);
 DEFINE_NETDEV_TRIGGER(rx, TRIGGER_NETDEV_RX);
 
@@ -425,6 +477,12 @@ static DEVICE_ATTR_RO(available_mode);
 static struct attribute *netdev_trig_attrs[] = {
 	&dev_attr_device_name.attr,
 	&dev_attr_link.attr,
+	&dev_attr_link_10.attr,
+	&dev_attr_link_100.attr,
+	&dev_attr_link_1000.attr,
+	&dev_attr_half_duplex.attr,
+	&dev_attr_full_duplex.attr,
+	&dev_attr_activity.attr,
 	&dev_attr_rx.attr,
 	&dev_attr_tx.attr,
 	&dev_attr_interval.attr,
