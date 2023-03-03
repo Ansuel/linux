@@ -124,8 +124,8 @@ static bool validate_baseline_state(struct led_netdev_data *trigger_data)
 				continue;
 			}
 
-			/* Check if the mode is supported */
-			if (led_trigger_blink_mode_is_supported(led_cdev, BIT(detail->bit)))
+			/* Check if single mode is present in the mask */
+			if (BIT(detail->bit) & led_cdev->trigger_supported_flags_mask)
 				hw_blink_modes |= BIT(detail->bit);
 		} else {
 			sw_blink_modes |= BIT(detail->bit);
@@ -135,6 +135,13 @@ static bool validate_baseline_state(struct led_netdev_data *trigger_data)
 	/* We can't run modes handled by both software and hardware. */
 	if (hw_blink_modes && sw_blink_modes)
 		return false;
+
+	/* Return early if we are using software mode */
+	if (sw_blink_modes) {
+		trigger_data->blink_mode = LED_BLINK_SW_CONTROLLED;
+
+		return true;
+	}
 
 	/* Make sure we support each requested mode */
 	if (hw_blink_modes && hw_blink_modes != trigger_data->mode)
@@ -157,13 +164,11 @@ static bool validate_baseline_state(struct led_netdev_data *trigger_data)
 	     test_bit(TRIGGER_NETDEV_LINK_1000, &hw_blink_modes)))
 		return false;
 
-	/* Modes are valid. Decide now the running mode to later
-	 * set the baseline.
-	 */
-	if (sw_blink_modes)
-		trigger_data->blink_mode = LED_BLINK_SW_CONTROLLED;
-	else
-		trigger_data->blink_mode = LED_BLINK_HW_CONTROLLED;
+	/* Check if the full requested mode is supported */
+	if (led_cdev->hw_control_is_supported(led_cdev, hw_blink_modes))
+		return false;
+
+	trigger_data->blink_mode = LED_BLINK_HW_CONTROLLED;
 
 	return true;
 }
@@ -177,9 +182,7 @@ static void set_baseline_state(struct led_netdev_data *trigger_data)
 
 	/* Modes already validated. Directly apply hw trigger modes */
 	if (trigger_data->blink_mode == LED_BLINK_HW_CONTROLLED) {
-		/* We are refreshing the blink modes. Reset them */
-		led_cdev->hw_control_configure(led_cdev, 0,
-					       LED_BLINK_HW_RESET);
+		unsigned long flags = 0;
 
 		for (i = 0; i < ARRAY_SIZE(attr_details); i++) {
 			detail = &attr_details[i];
@@ -187,11 +190,10 @@ static void set_baseline_state(struct led_netdev_data *trigger_data)
 			if (!test_bit(detail->bit, &trigger_data->mode))
 				continue;
 
-			led_cdev->hw_control_configure(led_cdev, BIT(detail->bit),
-						       LED_BLINK_HW_ENABLE);
+			flags |= BIT(detail->bit);
 		}
 
-		led_cdev->hw_control_start(led_cdev);
+		led_cdev->hw_control_set(led_cdev, flags);
 
 		return;
 	}
@@ -440,14 +442,15 @@ static ssize_t available_mode_show(struct device *dev,
 				   struct device_attribute *attr, char *buf)
 {
 	struct led_netdev_data *trigger_data = led_trigger_get_drvdata(dev);
+	struct led_classdev *led_cdev = trigger_data->led_cdev;
 	struct netdev_led_attr_detail *detail;
 	bool support_hw_mode;
 	int i, len = 0;
 
 	for (i = 0; i < ARRAY_SIZE(attr_details); i++) {
 		detail = &attr_details[i];
-		support_hw_mode = led_trigger_blink_mode_is_supported(trigger_data->led_cdev,
-								      BIT(detail->bit));
+		support_hw_mode = led_cdev->trigger_supported_flags_mask &
+				  BIT(detail->bit);
 
 		len += sprintf(buf + len, "%s ", detail->name);
 
@@ -610,24 +613,17 @@ static int netdev_trig_activate(struct led_classdev *led_cdev)
 	atomic_set(&trigger_data->interval, msecs_to_jiffies(50));
 	trigger_data->last_activity = 0;
 	if (led_cdev->blink_mode != LED_BLINK_SW_CONTROLLED) {
-		/* With hw mode enabled reset any rule set by default */
-		if (led_cdev->hw_control_status(led_cdev)) {
-			rc = led_cdev->hw_control_configure(led_cdev, 0,
-							    LED_BLINK_HW_RESET);
-			if (rc)
-				goto err;
-		}
+		/* With hw mode supported, check what we have active */
+		if (led_cdev->hw_control_get(led_cdev, &trigger_data->mode))
+			trigger_data->blink_mode = LED_BLINK_HW_CONTROLLED;
 	}
 
 	led_set_trigger_data(led_cdev, trigger_data);
 
 	rc = register_netdevice_notifier(&trigger_data->notifier);
 	if (rc)
-		goto err;
+		kfree(trigger_data);
 
-	return 0;
-err:
-	kfree(trigger_data);
 	return rc;
 }
 

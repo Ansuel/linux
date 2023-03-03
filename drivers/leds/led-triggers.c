@@ -175,21 +175,6 @@ static bool led_trigger_is_supported(struct led_classdev *led_cdev,
 	return 1;
 }
 
-static void led_trigger_hw_mode_stop(struct led_classdev *led_cdev)
-{
-	/* check if LED is in HW block mode */
-	if (led_cdev->blink_mode == LED_BLINK_SW_CONTROLLED)
-		return;
-
-	/*
-	 * We can assume these function are always present as
-	 * for LED support hw blink mode they MUST be provided or register
-	 * fail.
-	 */
-	if (led_cdev->hw_control_status(led_cdev))
-		led_cdev->hw_control_stop(led_cdev);
-}
-
 /* Caller must ensure led_cdev->trigger_lock held */
 int led_trigger_set(struct led_classdev *led_cdev, struct led_trigger *trig)
 {
@@ -215,8 +200,6 @@ int led_trigger_set(struct led_classdev *led_cdev, struct led_trigger *trig)
 
 		cancel_work_sync(&led_cdev->set_brightness_work);
 		led_stop_software_blink(led_cdev);
-		/* Disable hardware mode on trigger change if supported */
-		led_trigger_hw_mode_stop(led_cdev);
 		if (led_cdev->trigger->deactivate)
 			led_cdev->trigger->deactivate(led_cdev);
 		device_remove_groups(led_cdev->dev, led_cdev->trigger->groups);

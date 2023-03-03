@@ -171,16 +171,16 @@ static int led_classdev_check_blink_hw_mode_functions(struct led_classdev *led_c
 {
 	int mode = led_cdev->blink_mode;
 
-	if (mode == LED_BLINK_SWHW_CONTROLLED &&
-	    (!led_cdev->hw_control_status ||
-	    !led_cdev->hw_control_start ||
-	    !led_cdev->hw_control_stop))
+	if (mode != LED_BLINK_SW_CONTROLLED &&
+	    (!led_cdev->hw_control_is_supported ||
+	    !led_cdev->hw_control_set ||
+	    !led_cdev->hw_control_get))
 		return -EINVAL;
 
 	if (mode == LED_BLINK_SW_CONTROLLED &&
-	    (led_cdev->hw_control_status ||
-	    led_cdev->hw_control_start ||
-	    led_cdev->hw_control_stop))
+	    (led_cdev->hw_control_is_supported ||
+	    led_cdev->hw_control_set ||
+	    led_cdev->hw_control_get))
 		return -EINVAL;
 
 	return 0;

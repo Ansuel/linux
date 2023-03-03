@@ -48,7 +48,7 @@ qca8k_get_control_led_reg(int port_num, int led_num, struct qca8k_led_pattern_en
 }
 
 static int
-qca8k_parse_netdev(unsigned long rules, u32 *offload_trigger, u32 *mask)
+qca8k_parse_netdev(unsigned long rules, u32 *offload_trigger)
 {
 	/* Parsing specific to netdev trigger */
 	if (test_bit(TRIGGER_NETDEV_LINK, &rules))
@@ -76,62 +76,7 @@ qca8k_parse_netdev(unsigned long rules, u32 *offload_trigger, u32 *mask)
 	if (rules && !*offload_trigger)
 		return -EOPNOTSUPP;
 
-	*mask = *offload_trigger;
-
 	return 0;
-}
-
-static int
-qca8k_cled_hw_control_configure(struct led_classdev *ldev, unsigned long rules,
-				enum led_blink_hw_cmd cmd)
-{
-	struct qca8k_led *led = container_of(ldev, struct qca8k_led, cdev);
-	struct led_trigger *trigger = ldev->trigger;
-	struct qca8k_led_pattern_en reg_info;
-	struct qca8k_priv *priv = led->priv;
-	u32 offload_trigger = 0, mask, val;
-	int ret;
-
-	ret = qca8k_parse_netdev(rules, &offload_trigger, &mask);
-	if (ret)
-		return ret;
-
-	qca8k_get_control_led_reg(led->port_num, led->led_num, &reg_info);
-
-	switch (cmd) {
-	case LED_BLINK_HW_SUPPORTED:
-		/* We reach this point, we are sure the trigger is supported */
-		return 1;
-	case LED_BLINK_HW_RESET:
-		/* We set 4hz by default */
-		ret = regmap_update_bits(priv->regmap, reg_info.reg,
-					 QCA8K_LED_RULE_MASK << reg_info.shift,
-					 QCA8K_LED_BLINK_4HZ << reg_info.shift);
-		break;
-	case LED_BLINK_HW_ENABLE:
-		ret = regmap_update_bits(priv->regmap, reg_info.reg,
-					 mask << reg_info.shift,
-					 offload_trigger << reg_info.shift);
-		break;
-	case LED_BLINK_HW_DISABLE:
-		ret = regmap_update_bits(priv->regmap, reg_info.reg,
-					 mask << reg_info.shift,
-					 0);
-		break;
-	case LED_BLINK_HW_STATUS:
-		ret = regmap_read(priv->regmap, reg_info.reg, &val);
-		if (ret)
-			return ret;
-
-		val >>= reg_info.shift;
-		val &= offload_trigger;
-
-		return val;
-	default:
-		return -EOPNOTSUPP;
-	}
-
-	return ret;
 }
 
 static int
@@ -264,18 +209,6 @@ qca8k_cled_trigger_offload(struct led_classdev *ldev, bool enable)
 				  val << reg_info.shift);
 }
 
-static int
-qca8k_cled_hw_control_start(struct led_classdev *led_cdev)
-{
-	return qca8k_cled_trigger_offload(led_cdev, true);
-}
-
-static int
-qca8k_cled_hw_control_stop(struct led_classdev *led_cdev)
-{
-	return qca8k_cled_trigger_offload(led_cdev, false);
-}
-
 static bool
 qca8k_cled_hw_control_status(struct led_classdev *ldev)
 {
@@ -299,6 +232,81 @@ qca8k_cled_hw_control_status(struct led_classdev *ldev)
 	}
 
 	return val == QCA8K_LED_RULE_CONTROLLED;
+}
+
+static int
+qca8k_cled_hw_control_is_supported(struct led_classdev *ldev, unsigned long rules)
+{
+	u32 offload_trigger = 0;
+
+	return qca8k_parse_netdev(rules, &offload_trigger);
+}
+
+static int
+qca8k_cled_hw_control_set(struct led_classdev *ldev, unsigned long rules)
+{
+	struct qca8k_led *led = container_of(ldev, struct qca8k_led, cdev);
+	struct qca8k_led_pattern_en reg_info;
+	struct qca8k_priv *priv = led->priv;
+	u32 offload_trigger = 0;
+	int ret;
+
+	ret = qca8k_parse_netdev(rules, &offload_trigger);
+	if (ret)
+		return ret;
+
+	ret = qca8k_cled_trigger_offload(ldev, true);
+	if (ret)
+		return ret;
+
+	qca8k_get_control_led_reg(led->port_num, led->led_num, &reg_info);
+
+	return regmap_update_bits(priv->regmap, reg_info.reg,
+				  QCA8K_LED_RULE_MASK << reg_info.shift,
+				  offload_trigger << reg_info.shift);
+}
+
+static int
+qca8k_cled_hw_control_get(struct led_classdev *ldev, unsigned long *rules)
+{
+	struct qca8k_led *led = container_of(ldev, struct qca8k_led, cdev);
+	struct qca8k_led_pattern_en reg_info;
+	struct qca8k_priv *priv = led->priv;
+	u32 val;
+	int ret;
+
+	/* With hw control not active return err */
+	if (!qca8k_cled_hw_control_status(ldev))
+		return -EINVAL;
+
+	qca8k_get_control_led_reg(led->port_num, led->led_num, &reg_info);
+
+	ret = regmap_read(priv->regmap, reg_info.reg, &val);
+	if (ret)
+		return ret;
+
+	val >>= reg_info.shift;
+	val &= QCA8K_LED_RULE_MASK;
+
+	/* Parsing specific to netdev trigger */
+	if (val & QCA8K_LED_LINK_10M_EN_MASK)
+		set_bit(TRIGGER_NETDEV_LINK_10, rules);
+	if (val & QCA8K_LED_LINK_100M_EN_MASK)
+		set_bit(TRIGGER_NETDEV_LINK_100, rules);
+	if (val & QCA8K_LED_LINK_1000M_EN_MASK)
+		set_bit(TRIGGER_NETDEV_LINK_1000, rules);
+
+	if (val & QCA8K_LED_HALF_DUPLEX_MASK)
+		set_bit(TRIGGER_NETDEV_HALF_DUPLEX, rules);
+	if (val & QCA8K_LED_FULL_DUPLEX_MASK)
+		set_bit(TRIGGER_NETDEV_FULL_DUPLEX, rules);
+
+	if (val & QCA8K_LED_TX_BLINK_MASK)
+		set_bit(TRIGGER_NETDEV_TX, rules);
+	if (val & QCA8K_LED_RX_BLINK_MASK)
+		set_bit(TRIGGER_NETDEV_RX, rules);
+
+	return 0;
 }
 
 static int
@@ -370,11 +378,17 @@ qca8k_parse_port_leds(struct qca8k_priv *priv, struct fwnode_handle *port, int p
 		port_led->cdev.brightness_set_blocking = qca8k_cled_brightness_set_blocking;
 		port_led->cdev.brightness_get = qca8k_cled_brightness_get;
 		port_led->cdev.blink_set = qca8k_cled_blink_set;
-		port_led->cdev.hw_control_start = qca8k_cled_hw_control_start;
-		port_led->cdev.hw_control_stop = qca8k_cled_hw_control_stop;
-		port_led->cdev.hw_control_status = qca8k_cled_hw_control_status;
-		port_led->cdev.hw_control_configure = qca8k_cled_hw_control_configure;
+		port_led->cdev.hw_control_is_supported = qca8k_cled_hw_control_is_supported;
+		port_led->cdev.hw_control_set = qca8k_cled_hw_control_set;
+		port_led->cdev.hw_control_get = qca8k_cled_hw_control_get;
 		port_led->cdev.hw_control_trigger = "netdev";
+		port_led->cdev.trigger_supported_flags_mask = BIT(TRIGGER_NETDEV_LINK_10) |
+							      BIT(TRIGGER_NETDEV_LINK_100) |
+							      BIT(TRIGGER_NETDEV_LINK_1000) |
+							      BIT(TRIGGER_NETDEV_HALF_DUPLEX) |
+							      BIT(TRIGGER_NETDEV_FULL_DUPLEX) |
+							      BIT(TRIGGER_NETDEV_TX) |
+							      BIT(TRIGGER_NETDEV_RX);
 		init_data.default_label = ":port";
 		init_data.devicename = "qca8k";
 		init_data.fwnode = led;
