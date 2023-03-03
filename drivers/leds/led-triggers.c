@@ -162,9 +162,13 @@ static bool led_trigger_is_supported(struct led_classdev *led_cdev,
 		return trigger->supported_blink_modes != LED_TRIGGER_HW_ONLY;
 
 	case LED_BLINK_HW_CONTROLLED:
-		return trigger->supported_blink_modes != LED_TRIGGER_SW_ONLY;
+		return trigger->supported_blink_modes != LED_TRIGGER_SW_ONLY &&
+			   !strcmp(led_cdev->hw_control_trigger, trigger->name);
 
 	case LED_BLINK_SWHW_CONTROLLED:
+		if (trigger->supported_blink_modes == LED_TRIGGER_HW_ONLY)
+			return !strcmp(led_cdev->hw_control_trigger, trigger->name);
+
 		return true;
 	}
 

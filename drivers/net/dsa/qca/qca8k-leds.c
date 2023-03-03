@@ -92,13 +92,7 @@ qca8k_cled_hw_control_configure(struct led_classdev *ldev, unsigned long rules,
 	u32 offload_trigger = 0, mask, val;
 	int ret;
 
-	/* Check trigger compatibility */
-	if (strcmp(trigger->name, "netdev"))
-		return -EOPNOTSUPP;
-
-	if (!strcmp(trigger->name, "netdev"))
-		ret = qca8k_parse_netdev(rules, &offload_trigger, &mask);
-
+	ret = qca8k_parse_netdev(rules, &offload_trigger, &mask);
 	if (ret)
 		return ret;
 
@@ -380,6 +374,7 @@ qca8k_parse_port_leds(struct qca8k_priv *priv, struct fwnode_handle *port, int p
 		port_led->cdev.hw_control_stop = qca8k_cled_hw_control_stop;
 		port_led->cdev.hw_control_status = qca8k_cled_hw_control_status;
 		port_led->cdev.hw_control_configure = qca8k_cled_hw_control_configure;
+		port_led->cdev.hw_control_trigger = "netdev";
 		init_data.default_label = ":port";
 		init_data.devicename = "qca8k";
 		init_data.fwnode = led;

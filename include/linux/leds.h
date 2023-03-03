@@ -190,6 +190,8 @@ struct led_classdev {
 	/* LEDs that have private triggers have this set */
 	struct led_hw_trigger_type	*trigger_type;
 
+	/* Unique trigger supported by LED set in hw blink mode */
+	const char		*hw_control_trigger;
 	/* This report the supported blink_mode. The driver should report the
 	 * correct LED capabilities.
 	 * With this set to LED_BLINK_HW_CONTROLLED, LED is always in offload
