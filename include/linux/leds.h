@@ -157,6 +157,8 @@ struct led_classdev {
 
 	/* Unique trigger name supported by LED set in hw blink mode */
 	const char		*hw_control_trigger;
+	/* Mask of the different supported trigger mode in hw blink mode */
+	unsigned long		trigger_supported_flags_mask;
 	/*
 	 * Activate hardware blink control, LED driver will use the provided flags
 	 * from the supported trigger and setup the LED to blink using hardware
@@ -174,6 +176,13 @@ struct led_classdev {
 	 */
 	int			(*hw_control_get)(struct led_classdev *led_cdev,
 						  unsigned long *flags);
+	/*
+	 * Check if the LED driver supports the requested mode required by the
+	 * defined supported trigger to setup the LED to blink using hardware
+	 * acceleration.
+	 */
+	int			(*hw_control_is_supported)(struct led_classdev *led_cdev,
+							   unsigned long flags);
 #endif
 
 #ifdef CONFIG_LEDS_BRIGHTNESS_HW_CHANGED
