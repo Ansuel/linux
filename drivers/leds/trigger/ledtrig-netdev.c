@@ -50,6 +50,7 @@ struct led_netdev_data {
 	unsigned int last_activity;
 
 	unsigned long mode;
+	unsigned long hw_only_mode;
 	bool carrier_link_up;
 	bool hw_control;
 };
@@ -126,10 +127,17 @@ static int validate_requested_mode(struct led_netdev_data *trigger_data,
 		 * value is rejected if in hw control.
 		 */
 		if (interval == default_interval && !trigger_data->net_dev &&
-		    !force_sw && test_bit(i, &hw_supported_mode))
+		    !force_sw && test_bit(i, &hw_supported_mode)) {
 			set_bit(i, &hw_mode);
-		else
+		} else {
+			/* Exit early if we are asked to use hw only
+			 * mode in software fallback
+			 */
+			if (test_bit(i, &trigger_data->hw_only_mode))
+				return -EINVAL;
+
 			set_bit(i, &sw_mode);
+		}
 	}
 
 	/* We can't run modes handled by both sw and hw */
@@ -462,6 +470,7 @@ static int netdev_trig_activate(struct led_classdev *led_cdev)
 	trigger_data->device_name[0] = 0;
 
 	trigger_data->mode = 0;
+	trigger_data->hw_only_mode = 0;
 	atomic_set(&trigger_data->interval, msecs_to_jiffies(50));
 	trigger_data->last_activity = 0;
 
