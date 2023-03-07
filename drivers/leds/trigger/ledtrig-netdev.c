@@ -31,6 +31,12 @@
  * interval - duration of LED blink, in milliseconds
  * link -  LED's normal state reflects whether the link is up
  *         (has carrier) or not
+ * link_10 - LED's normal state reflects whether the link is
+ *           up and at 10mbps speed (hardware only)
+ * link_100 - LED's normal state reflects whether the link is
+ *            up and at 100mbps speed (hardware only)
+ * link_1000 - LED's normal state reflects whether the link is
+ *             up and at 1000mbps speed (hardware only)
  * tx -  LED blinks on transmitted data
  * rx -  LED blinks on receive data
  *
@@ -57,6 +63,9 @@ struct led_netdev_data {
 
 enum led_trigger_netdev_modes {
 	TRIGGER_NETDEV_LINK = 0,
+	TRIGGER_NETDEV_LINK_10,
+	TRIGGER_NETDEV_LINK_100,
+	TRIGGER_NETDEV_LINK_1000,
 	TRIGGER_NETDEV_TX,
 	TRIGGER_NETDEV_RX,
 
@@ -153,6 +162,15 @@ static int validate_requested_mode(struct led_netdev_data *trigger_data,
 	if (ret)
 		return ret;
 
+	/* Check conflicts single link speed can't be active if link is
+	 * active.
+	 */
+	if (test_bit(TRIGGER_NETDEV_LINK, &hw_mode) &&
+	    (test_bit(TRIGGER_NETDEV_LINK_10, &hw_mode) ||
+	     test_bit(TRIGGER_NETDEV_LINK_100, &hw_mode) ||
+	     test_bit(TRIGGER_NETDEV_LINK_1000, &hw_mode)))
+		return -EINVAL;
+
 	*can_use_hw_control = true;
 
 	return 0;
@@ -227,6 +245,9 @@ static ssize_t netdev_led_attr_show(struct device *dev, char *buf,
 
 	switch (attr) {
 	case TRIGGER_NETDEV_LINK:
+	case TRIGGER_NETDEV_LINK_10:
+	case TRIGGER_NETDEV_LINK_100:
+	case TRIGGER_NETDEV_LINK_1000:
 	case TRIGGER_NETDEV_TX:
 	case TRIGGER_NETDEV_RX:
 		bit = attr;
@@ -253,6 +274,9 @@ static ssize_t netdev_led_attr_store(struct device *dev, const char *buf,
 
 	switch (attr) {
 	case TRIGGER_NETDEV_LINK:
+	case TRIGGER_NETDEV_LINK_10:
+	case TRIGGER_NETDEV_LINK_100:
+	case TRIGGER_NETDEV_LINK_1000:
 	case TRIGGER_NETDEV_TX:
 	case TRIGGER_NETDEV_RX:
 		bit = attr;
@@ -295,6 +319,9 @@ static ssize_t netdev_led_attr_store(struct device *dev, const char *buf,
 	static DEVICE_ATTR_RW(trigger_name)
 
 DEFINE_NETDEV_TRIGGER(link, TRIGGER_NETDEV_LINK);
+DEFINE_NETDEV_TRIGGER(link_10, TRIGGER_NETDEV_LINK_10);
+DEFINE_NETDEV_TRIGGER(link_100, TRIGGER_NETDEV_LINK_100);
+DEFINE_NETDEV_TRIGGER(link_1000, TRIGGER_NETDEV_LINK_1000);
 DEFINE_NETDEV_TRIGGER(tx, TRIGGER_NETDEV_TX);
 DEFINE_NETDEV_TRIGGER(rx, TRIGGER_NETDEV_RX);
 
@@ -345,6 +372,9 @@ static DEVICE_ATTR_RW(interval);
 static struct attribute *netdev_trig_attrs[] = {
 	&dev_attr_device_name.attr,
 	&dev_attr_link.attr,
+	&dev_attr_link_10.attr,
+	&dev_attr_link_100.attr,
+	&dev_attr_link_1000.attr,
 	&dev_attr_rx.attr,
 	&dev_attr_tx.attr,
 	&dev_attr_interval.attr,
@@ -470,7 +500,9 @@ static int netdev_trig_activate(struct led_classdev *led_cdev)
 	trigger_data->device_name[0] = 0;
 
 	trigger_data->mode = 0;
-	trigger_data->hw_only_mode = 0;
+	trigger_data->hw_only_mode = BIT(TRIGGER_NETDEV_LINK_10) |
+				     BIT(TRIGGER_NETDEV_LINK_100) |
+				     BIT(TRIGGER_NETDEV_LINK_1000);
 	atomic_set(&trigger_data->interval, msecs_to_jiffies(50));
 	trigger_data->last_activity = 0;
 
