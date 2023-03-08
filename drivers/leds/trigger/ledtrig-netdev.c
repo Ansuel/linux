@@ -51,6 +51,7 @@ struct led_netdev_data {
 
 	unsigned long mode;
 	bool carrier_link_up;
+	bool hw_control;
 };
 
 enum led_trigger_netdev_modes {
@@ -89,6 +90,12 @@ static void set_baseline_state(struct led_netdev_data *trigger_data)
 		    test_bit(TRIGGER_NETDEV_RX, &trigger_data->mode))
 			schedule_delayed_work(&trigger_data->work, 0);
 	}
+}
+
+static int validate_requested_mode(struct led_netdev_data *trigger_data,
+				   unsigned long mode, bool *can_use_hw_control)
+{
+	return 0;
 }
 
 static ssize_t device_name_show(struct device *dev,
@@ -168,7 +175,8 @@ static ssize_t netdev_led_attr_store(struct device *dev, const char *buf,
 				     size_t size, enum led_trigger_netdev_modes attr)
 {
 	struct led_netdev_data *trigger_data = led_trigger_get_drvdata(dev);
-	unsigned long state;
+	unsigned long state, new_mode = trigger_data->mode;
+	bool can_use_hw_control = false;
 	int ret;
 	int bit;
 
@@ -186,12 +194,19 @@ static ssize_t netdev_led_attr_store(struct device *dev, const char *buf,
 		return -EINVAL;
 	}
 
+	if (state)
+		set_bit(bit, &new_mode);
+	else
+		clear_bit(bit, &new_mode);
+
+	ret = validate_requested_mode(trigger_data, new_mode);
+	if (ret)
+		return ret;
+
 	cancel_delayed_work_sync(&trigger_data->work);
 
-	if (state)
-		set_bit(bit, &trigger_data->mode);
-	else
-		clear_bit(bit, &trigger_data->mode);
+	trigger_data->mode = new_mode;
+	trigger_data->hw_control = can_use_hw_control;
 
 	set_baseline_state(trigger_data);
 
