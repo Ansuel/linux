@@ -199,7 +199,8 @@ static ssize_t netdev_led_attr_store(struct device *dev, const char *buf,
 	else
 		clear_bit(bit, &new_mode);
 
-	ret = validate_requested_mode(trigger_data, new_mode);
+	ret = validate_requested_mode(trigger_data, new_mode,
+				      &can_use_hw_control);
 	if (ret)
 		return ret;
 
