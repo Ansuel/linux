@@ -3178,6 +3178,7 @@ static int of_phy_package(struct phy_device *phydev)
 {
 	struct device_node *node = phydev->mdio.dev.of_node;
 	struct device_node *package_node;
+	int shared_priv_data_size;
 	u32 base_addr;
 	int ret;
 
@@ -3194,8 +3195,12 @@ static int of_phy_package(struct phy_device *phydev)
 	if (of_property_read_u32(package_node, "reg", &base_addr))
 		return -EINVAL;
 
+	shared_priv_data_size = 0;
+	if (phydev->drv->phy_package_priv_data_size)
+		shared_priv_data_size = phydev->drv->phy_package_priv_data_size;
+
 	ret = devm_phy_package_join(&phydev->mdio.dev, phydev,
-				    base_addr, 0);
+				    base_addr, shared_priv_data_size);
 	if (ret)
 		return ret;
 
