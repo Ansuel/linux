@@ -9,7 +9,7 @@
 static int
 qca8k_get_enable_led_reg(int port_num, int led_num, struct qca8k_led_pattern_en *reg_info)
 {
-	switch (port_num) {
+	switch (qca8k_port_to_phy(port_num)) {
 	case 0:
 		reg_info->reg = QCA8K_LED_CTRL_REG(led_num);
 		reg_info->shift = QCA8K_LED_PHY0123_CONTROL_RULE_SHIFT;
@@ -41,7 +41,7 @@ qca8k_get_control_led_reg(int port_num, int led_num, struct qca8k_led_pattern_en
 	 * 3 control rules for phy0-3 that applies to all their leds
 	 * 3 control rules for phy4
 	 */
-	if (port_num == 4)
+	if (qca8k_port_to_phy(port_num) == 4)
 		reg_info->shift = QCA8K_LED_PHY4_CONTROL_RULE_SHIFT;
 	else
 		reg_info->shift = QCA8K_LED_PHY0123_CONTROL_RULE_SHIFT;
@@ -127,7 +127,8 @@ qca8k_led_brightness_set(struct dsa_switch *ds, int port_num,
 	 * to calculate the shift and the correct reg due to this problem of
 	 * not having a 1:1 map of LED with the regs.
 	 */
-	if (port_num == 0 || port_num == 4) {
+	if (qca8k_port_to_phy(port_num) == 0 ||
+	    qca8k_port_to_phy(port_num) == 4) {
 		mask = QCA8K_LED_PATTERN_EN_MASK;
 		val <<= QCA8K_LED_PATTERN_EN_SHIFT;
 	} else {
@@ -162,7 +163,8 @@ qca8k_led_blink_set(struct dsa_switch *ds, int port_num, u8 led_num,
 
 	qca8k_get_enable_led_reg(port_num, led_num, &reg_info);
 
-	if (port_num == 0 || port_num == 4) {
+	if (qca8k_port_to_phy(port_num) == 0 ||
+	    qca8k_port_to_phy(port_num) == 4) {
 		mask = QCA8K_LED_PATTERN_EN_MASK;
 		val <<= QCA8K_LED_PATTERN_EN_SHIFT;
 	} else {
@@ -187,7 +189,8 @@ qca8k_led_trigger_offload(struct qca8k_priv *priv, int port_num, u8 led_num,
 	if (enable)
 		val = QCA8K_LED_RULE_CONTROLLED;
 
-	if (port_num == 0 || port_num == 4) {
+	if (qca8k_port_to_phy(port_num) == 0 ||
+	    qca8k_port_to_phy(port_num) == 4) {
 		mask = QCA8K_LED_PATTERN_EN_MASK;
 		val <<= QCA8K_LED_PATTERN_EN_SHIFT;
 	} else {
@@ -210,7 +213,8 @@ qca8k_led_hw_control_status(struct qca8k_priv *priv, int port_num, u8 led_num)
 
 	val >>= reg_info.shift;
 
-	if (port_num == 0 || port_num == 4) {
+	if (qca8k_port_to_phy(port_num) == 0 ||
+	    qca8k_port_to_phy(port_num) == 4) {
 		val &= QCA8K_LED_PATTERN_EN_MASK;
 		val >>= QCA8K_LED_PATTERN_EN_SHIFT;
 	} else {
