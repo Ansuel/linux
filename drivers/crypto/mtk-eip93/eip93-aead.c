@@ -71,22 +71,11 @@ static int mtk_aead_cra_init(struct crypto_tfm *tfm)
 
 	ctx->mtk = tmpl->mtk;
 	ctx->type = tmpl->type;
-	ctx->in_first = true;
-	ctx->out_first = true;
+	ctx->set_assoc = true;
 
-	ctx->sa_in = kzalloc(sizeof(*ctx->sa_in), GFP_KERNEL);
-	if (!ctx->sa_in)
+	ctx->sa_record = kzalloc(sizeof(*ctx->sa_record), GFP_KERNEL);
+	if (!ctx->sa_record)
 		return -ENOMEM;
-
-	ctx->sa_base_in = dma_map_single(ctx->mtk->dev, ctx->sa_in,
-					 sizeof(*ctx->sa_in), DMA_TO_DEVICE);
-
-	ctx->sa_out = kzalloc(sizeof(*ctx->sa_out), GFP_KERNEL);
-	if (!ctx->sa_out)
-		return -ENOMEM;
-
-	ctx->sa_base_out = dma_map_single(ctx->mtk->dev, ctx->sa_out,
-					  sizeof(*ctx->sa_out), DMA_TO_DEVICE);
 
 	/* software workaround for now */
 	if (IS_HASH_MD5(flags))
@@ -116,12 +105,9 @@ static void mtk_aead_cra_exit(struct crypto_tfm *tfm)
 	if (ctx->shash)
 		crypto_free_shash(ctx->shash);
 
-	dma_unmap_single(ctx->mtk->dev, ctx->sa_base_in,
-			 sizeof(*ctx->sa_in), DMA_TO_DEVICE);
-	dma_unmap_single(ctx->mtk->dev, ctx->sa_base_out,
-			 sizeof(*ctx->sa_out), DMA_TO_DEVICE);
-	kfree(ctx->sa_in);
-	kfree(ctx->sa_out);
+	dma_unmap_single(ctx->mtk->dev, ctx->sa_record_base,
+			 sizeof(*ctx->sa_record), DMA_TO_DEVICE);
+	kfree(ctx->sa_record);
 }
 
 static int mtk_aead_setkey(struct crypto_aead *ctfm, const u8 *key,
@@ -134,8 +120,7 @@ static int mtk_aead_setkey(struct crypto_aead *ctfm, const u8 *key,
 	u32 flags = tmpl->flags;
 	struct crypto_authenc_keys keys;
 	struct crypto_aes_ctx aes;
-	struct sa_record *sa_record = ctx->sa_out;
-	int sa_size = sizeof(struct sa_record);
+	struct sa_record *sa_record = ctx->sa_record;
 	u32 nonce = 0;
 	int ret;
 
@@ -170,11 +155,6 @@ static int mtk_aead_setkey(struct crypto_aead *ctfm, const u8 *key,
 		return ret;
 
 	ctx->blksize = crypto_aead_blocksize(ctfm);
-	dma_unmap_single(ctx->mtk->dev, ctx->sa_base_in, sa_size,
-			 DMA_TO_DEVICE);
-
-	dma_unmap_single(ctx->mtk->dev, ctx->sa_base_out, sa_size,
-			 DMA_TO_DEVICE);
 	/* Encryption key */
 	mtk_set_sa_record(sa_record, keys.enckeylen, flags);
 	sa_record->sa_cmd0_word &= ~EIP93_SA_CMD_OPCODE;
@@ -182,7 +162,7 @@ static int mtk_aead_setkey(struct crypto_aead *ctfm, const u8 *key,
 					      EIP93_SA_CMD_OPCODE_BASIC_OUT_ENC_HASH);
 	sa_record->sa_cmd0_word &= ~EIP93_SA_CMD_DIGEST_LENGTH;
 	sa_record->sa_cmd0_word |= FIELD_PREP(EIP93_SA_CMD_DIGEST_LENGTH,
-					      ctx->authsize >> 2);
+					      ctx->authsize / sizeof(u32));
 
 	memcpy(sa_record->sa_key, keys.enckey, keys.enckeylen);
 	ctx->sa_nonce = nonce;
@@ -192,18 +172,7 @@ static int mtk_aead_setkey(struct crypto_aead *ctfm, const u8 *key,
 	ret = mtk_authenc_setkey(ctx->shash, sa_record, keys.authkey,
 				 keys.authkeylen);
 
-	sa_record->sa_cmd0_word &= ~EIP93_SA_CMD_DIRECTION;
-	memcpy(ctx->sa_in, sa_record, sa_size);
-	ctx->sa_in->sa_cmd0_word |= EIP93_SA_CMD_DIRECTION;
-	ctx->sa_in->sa_cmd1_word &= ~(EIP93_SA_CMD_COPY_PAD |
-				      EIP93_SA_CMD_COPY_DIGEST);
-
-	ctx->sa_base_out = dma_map_single(ctx->mtk->dev, ctx->sa_out, sa_size,
-					  DMA_TO_DEVICE);
-	ctx->sa_base_in = dma_map_single(ctx->mtk->dev, ctx->sa_in, sa_size,
-					 DMA_TO_DEVICE);
-	ctx->in_first = true;
-	ctx->out_first = true;
+	ctx->set_assoc = true;
 
 	return ret;
 }
@@ -214,55 +183,24 @@ static int mtk_aead_setauthsize(struct crypto_aead *ctfm,
 	struct crypto_tfm *tfm = crypto_aead_tfm(ctfm);
 	struct mtk_crypto_ctx *ctx = crypto_tfm_ctx(tfm);
 
-	dma_unmap_single(ctx->mtk->dev, ctx->sa_base_in,
-			 sizeof(*ctx->sa_in), DMA_TO_DEVICE);
-
-	dma_unmap_single(ctx->mtk->dev, ctx->sa_base_out,
-			 sizeof(*ctx->sa_out), DMA_TO_DEVICE);
-
 	ctx->authsize = authsize;
-	ctx->sa_in->sa_cmd0_word &= ~EIP93_SA_CMD_DIGEST_LENGTH;
-	ctx->sa_in->sa_cmd0_word |= FIELD_PREP(EIP93_SA_CMD_DIGEST_LENGTH,
-					       ctx->authsize >> 2);
-	ctx->sa_out->sa_cmd0_word &= ~EIP93_SA_CMD_DIGEST_LENGTH;
-	ctx->sa_out->sa_cmd0_word |= FIELD_PREP(EIP93_SA_CMD_DIGEST_LENGTH,
-						ctx->authsize >> 2);
+	ctx->sa_record->sa_cmd0_word &= ~EIP93_SA_CMD_DIGEST_LENGTH;
+	ctx->sa_record->sa_cmd0_word |= FIELD_PREP(EIP93_SA_CMD_DIGEST_LENGTH,
+						   ctx->authsize / sizeof(u32));
 
-	ctx->sa_base_out = dma_map_single(ctx->mtk->dev, ctx->sa_out,
-					  sizeof(*ctx->sa_out), DMA_TO_DEVICE);
-	ctx->sa_base_in = dma_map_single(ctx->mtk->dev, ctx->sa_in,
-					 sizeof(*ctx->sa_in), DMA_TO_DEVICE);
 	return 0;
 }
 
 static void mtk_aead_setassoc(struct mtk_crypto_ctx *ctx,
-			      struct aead_request *req, bool in)
+			      struct aead_request *req)
 {
-	struct sa_record *sa_record;
+	struct sa_record *sa_record = ctx->sa_record;
 
-	if (in) {
-		dma_unmap_single(ctx->mtk->dev, ctx->sa_base_in,
-				 sizeof(*ctx->sa_in), DMA_TO_DEVICE);
-		sa_record = ctx->sa_in;
-		sa_record->sa_cmd1_word &= ~EIP93_SA_CMD_HASH_CRYPT_OFFSET;
-		sa_record->sa_cmd1_word |= FIELD_PREP(EIP93_SA_CMD_HASH_CRYPT_OFFSET,
-						      req->assoclen >> 2);
+	sa_record->sa_cmd1_word &= ~EIP93_SA_CMD_HASH_CRYPT_OFFSET;
+	sa_record->sa_cmd1_word |= FIELD_PREP(EIP93_SA_CMD_HASH_CRYPT_OFFSET,
+					      req->assoclen / sizeof(u32));
 
-		ctx->sa_base_in = dma_map_single(ctx->mtk->dev, ctx->sa_in,
-						 sizeof(*ctx->sa_in), DMA_TO_DEVICE);
-		ctx->assoclen_in = req->assoclen;
-	} else {
-		dma_unmap_single(ctx->mtk->dev, ctx->sa_base_out,
-				 sizeof(*ctx->sa_out), DMA_TO_DEVICE);
-		sa_record = ctx->sa_out;
-		sa_record->sa_cmd1_word &= ~EIP93_SA_CMD_HASH_CRYPT_OFFSET;
-		sa_record->sa_cmd1_word |= FIELD_PREP(EIP93_SA_CMD_HASH_CRYPT_OFFSET,
-						      req->assoclen >> 2);
-
-		ctx->sa_base_out = dma_map_single(ctx->mtk->dev, ctx->sa_out,
-						  sizeof(*ctx->sa_out), DMA_TO_DEVICE);
-		ctx->assoclen_out = req->assoclen;
-	}
+	ctx->assoclen_in = req->assoclen;
 }
 
 static int mtk_aead_crypt(struct aead_request *req)
@@ -272,6 +210,9 @@ static int mtk_aead_crypt(struct aead_request *req)
 	struct mtk_crypto_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
 	struct crypto_aead *aead = crypto_aead_reqtfm(req);
 
+	ctx->sa_record_base = dma_map_single(ctx->mtk->dev, ctx->sa_record,
+					     sizeof(*ctx->sa_record), DMA_TO_DEVICE);
+
 	rctx->textsize = req->cryptlen;
 	rctx->blksize = ctx->blksize;
 	rctx->assoclen = req->assoclen;
@@ -280,6 +221,7 @@ static int mtk_aead_crypt(struct aead_request *req)
 	rctx->sg_dst = req->dst;
 	rctx->ivsize = crypto_aead_ivsize(aead);
 	rctx->desc_flags = MTK_DESC_AEAD;
+	rctx->sa_record_base = ctx->sa_record_base;
 
 	if (IS_DECRYPT(rctx->flags))
 		rctx->textsize -= rctx->authsize;
@@ -296,17 +238,15 @@ static int mtk_aead_encrypt(struct aead_request *req)
 
 	rctx->flags = tmpl->flags;
 	rctx->flags |= MTK_ENCRYPT;
-	if (ctx->out_first) {
-		mtk_aead_setassoc(ctx, req, false);
-		ctx->out_first = false;
+	if (ctx->set_assoc) {
+		mtk_aead_setassoc(ctx, req);
+		ctx->set_assoc = false;
 	}
 
 	if (req->assoclen != ctx->assoclen_out) {
 		dev_err(ctx->mtk->dev, "Request AAD length error\n");
 		return -EINVAL;
 	}
-
-	rctx->sa_record_base = ctx->sa_base_out;
 
 	return mtk_aead_crypt(req);
 }
@@ -318,19 +258,21 @@ static int mtk_aead_decrypt(struct aead_request *req)
 	struct mtk_alg_template *tmpl = container_of(req->base.tfm->__crt_alg,
 				struct mtk_alg_template, alg.aead.base);
 
+	ctx->sa_record->sa_cmd0_word |= EIP93_SA_CMD_DIRECTION_IN;
+	ctx->sa_record->sa_cmd1_word &= ~(EIP93_SA_CMD_COPY_PAD |
+					  EIP93_SA_CMD_COPY_DIGEST);
+
 	rctx->flags = tmpl->flags;
 	rctx->flags |= MTK_DECRYPT;
-	if (ctx->in_first) {
-		mtk_aead_setassoc(ctx, req, true);
-		ctx->in_first = false;
+	if (ctx->set_assoc) {
+		mtk_aead_setassoc(ctx, req);
+		ctx->set_assoc = false;
 	}
 
 	if (req->assoclen != ctx->assoclen_in) {
 		dev_err(ctx->mtk->dev, "Request AAD length error\n");
 		return -EINVAL;
 	}
-
-	rctx->sa_record_base = ctx->sa_base_in;
 
 	return mtk_aead_crypt(req);
 }

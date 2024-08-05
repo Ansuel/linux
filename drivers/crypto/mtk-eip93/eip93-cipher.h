@@ -11,18 +11,15 @@
 
 struct mtk_crypto_ctx {
 	struct mtk_device		*mtk;
-	struct sa_record		*sa_in;
-	dma_addr_t			sa_base_in;
-	struct sa_record		*sa_out;
-	dma_addr_t			sa_base_out;
+	struct sa_record		*sa_record;
 	u32				sa_nonce;
 	int				blksize;
+	dma_addr_t			sa_record_base;
 	/* AEAD specific */
 	unsigned int			authsize;
 	unsigned int			assoclen_in;
 	unsigned int			assoclen_out;
-	bool				in_first;
-	bool				out_first;
+	bool				set_assoc;
 	enum mtk_alg_type		type;
 	struct crypto_shash		*shash;
 };

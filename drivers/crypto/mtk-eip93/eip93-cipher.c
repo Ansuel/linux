@@ -63,19 +63,10 @@ static int mtk_skcipher_cra_init(struct crypto_tfm *tfm)
 	ctx->mtk = tmpl->mtk;
 	ctx->type = tmpl->type;
 
-	ctx->sa_in = kzalloc(sizeof(*ctx->sa_in), GFP_KERNEL);
-	if (!ctx->sa_in)
+	ctx->sa_record = kzalloc(sizeof(*ctx->sa_record), GFP_KERNEL);
+	if (!ctx->sa_record)
 		return -ENOMEM;
 
-	ctx->sa_base_in = dma_map_single(ctx->mtk->dev, ctx->sa_in,
-					 sizeof(*ctx->sa_in), DMA_TO_DEVICE);
-
-	ctx->sa_out = kzalloc(sizeof(*ctx->sa_out), GFP_KERNEL);
-	if (!ctx->sa_out)
-		return -ENOMEM;
-
-	ctx->sa_base_out = dma_map_single(ctx->mtk->dev, ctx->sa_out,
-					  sizeof(*ctx->sa_out), DMA_TO_DEVICE);
 	return 0;
 }
 
@@ -83,12 +74,9 @@ static void mtk_skcipher_cra_exit(struct crypto_tfm *tfm)
 {
 	struct mtk_crypto_ctx *ctx = crypto_tfm_ctx(tfm);
 
-	dma_unmap_single(ctx->mtk->dev, ctx->sa_base_in,
-			 sizeof(*ctx->sa_in), DMA_TO_DEVICE);
-	dma_unmap_single(ctx->mtk->dev, ctx->sa_base_out,
-			 sizeof(*ctx->sa_out), DMA_TO_DEVICE);
-	kfree(ctx->sa_in);
-	kfree(ctx->sa_out);
+	dma_unmap_single(ctx->mtk->dev, ctx->sa_record_base,
+			 sizeof(*ctx->sa_record), DMA_TO_DEVICE);
+	kfree(ctx->sa_record);
 }
 
 static int mtk_skcipher_setkey(struct crypto_skcipher *ctfm, const u8 *key,
@@ -99,8 +87,7 @@ static int mtk_skcipher_setkey(struct crypto_skcipher *ctfm, const u8 *key,
 	struct mtk_alg_template *tmpl = container_of(tfm->__crt_alg,
 						     struct mtk_alg_template,
 						     alg.skcipher.base);
-	struct sa_record *sa_record = ctx->sa_out;
-	int sa_size = sizeof(*sa_record);
+	struct sa_record *sa_record = ctx->sa_record;
 	unsigned int keylen = len;
 	u32 flags = tmpl->flags;
 	u32 nonce = 0;
@@ -137,27 +124,11 @@ static int mtk_skcipher_setkey(struct crypto_skcipher *ctfm, const u8 *key,
 	if (ret)
 		return ret;
 
-	dma_unmap_single(ctx->mtk->dev, ctx->sa_base_in, sa_size,
-			 DMA_TO_DEVICE);
-
-	dma_unmap_single(ctx->mtk->dev, ctx->sa_base_out, sa_size,
-			 DMA_TO_DEVICE);
-
 	mtk_set_sa_record(sa_record, keylen, flags);
 
 	memcpy(sa_record->sa_key, key, keylen);
 	ctx->sa_nonce = nonce;
 	sa_record->sa_nonce = nonce;
-	sa_record->sa_cmd0_word &= ~EIP93_SA_CMD_DIRECTION;
-
-	memcpy(ctx->sa_in, sa_record, sa_size);
-	ctx->sa_in->sa_cmd0_word |= EIP93_SA_CMD_DIRECTION;
-
-	ctx->sa_base_out = dma_map_single(ctx->mtk->dev, ctx->sa_out, sa_size,
-					  DMA_TO_DEVICE);
-
-	ctx->sa_base_in = dma_map_single(ctx->mtk->dev, ctx->sa_in, sa_size,
-					 DMA_TO_DEVICE);
 
 	return 0;
 }
@@ -181,6 +152,9 @@ static int mtk_skcipher_crypt(struct skcipher_request *req)
 				crypto_skcipher_blocksize(skcipher)))
 			return -EINVAL;
 
+	ctx->sa_record_base = dma_map_single(ctx->mtk->dev, ctx->sa_record,
+					     sizeof(*ctx->sa_record), DMA_TO_DEVICE);
+
 	rctx->assoclen = 0;
 	rctx->textsize = req->cryptlen;
 	rctx->authsize = 0;
@@ -189,20 +163,19 @@ static int mtk_skcipher_crypt(struct skcipher_request *req)
 	rctx->ivsize = crypto_skcipher_ivsize(skcipher);
 	rctx->blksize = ctx->blksize;
 	rctx->desc_flags = MTK_DESC_SKCIPHER;
+	rctx->sa_record_base = ctx->sa_record_base;
 
 	return mtk_skcipher_send_req(async);
 }
 
 static int mtk_skcipher_encrypt(struct skcipher_request *req)
 {
-	struct mtk_crypto_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
 	struct mtk_cipher_reqctx *rctx = skcipher_request_ctx(req);
 	struct mtk_alg_template *tmpl = container_of(req->base.tfm->__crt_alg,
 				struct mtk_alg_template, alg.skcipher.base);
 
 	rctx->flags = tmpl->flags;
 	rctx->flags |= MTK_ENCRYPT;
-	rctx->sa_record_base = ctx->sa_base_out;
 
 	return mtk_skcipher_crypt(req);
 }
@@ -214,9 +187,10 @@ static int mtk_skcipher_decrypt(struct skcipher_request *req)
 	struct mtk_alg_template *tmpl = container_of(req->base.tfm->__crt_alg,
 				struct mtk_alg_template, alg.skcipher.base);
 
+	ctx->sa_record->sa_cmd0_word |= EIP93_SA_CMD_DIRECTION_IN;
+
 	rctx->flags = tmpl->flags;
 	rctx->flags |= MTK_DECRYPT;
-	rctx->sa_record_base = ctx->sa_base_in;
 
 	return mtk_skcipher_crypt(req);
 }

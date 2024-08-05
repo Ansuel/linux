@@ -99,13 +99,49 @@ static void mtk_unregister_algs(unsigned int i)
 	}
 }
 
-static int mtk_register_algs(struct mtk_device *mtk)
+static int mtk_register_algs(struct mtk_device *mtk, u32 supported_algo_flags)
 {
 	unsigned int i;
 	int ret = 0;
 
 	for (i = 0; i < ARRAY_SIZE(mtk_algs); i++) {
+		u32 alg_flags = mtk_algs[i]->flags;
+
 		mtk_algs[i]->mtk = mtk;
+
+		if ((IS_DES(alg_flags) || IS_3DES(alg_flags)) &&
+		    !(supported_algo_flags & EIP93_PE_OPTION_TDES))
+			continue;
+
+		if (IS_AES(alg_flags)) {
+			if (!(supported_algo_flags & EIP93_PE_OPTION_AES))
+				continue;
+
+			if (supported_algo_flags & EIP93_PE_OPTION_AES_KEY128)
+				mtk_algs[i]->alg.skcipher.max_keysize = AES_KEYSIZE_128;
+
+			if (supported_algo_flags & EIP93_PE_OPTION_AES_KEY192)
+				mtk_algs[i]->alg.skcipher.max_keysize = AES_KEYSIZE_192;
+
+			if (supported_algo_flags & EIP93_PE_OPTION_AES_KEY256)
+				mtk_algs[i]->alg.skcipher.max_keysize = AES_KEYSIZE_256;
+		}
+
+		if (IS_HASH_MD5(alg_flags) &&
+		    !(supported_algo_flags & EIP93_PE_OPTION_MD5))
+			continue;
+
+		if (IS_HASH_SHA1(alg_flags) &&
+		    !(supported_algo_flags & EIP93_PE_OPTION_SHA_1))
+			continue;
+
+		if (IS_HASH_SHA224(alg_flags) &&
+		    !(supported_algo_flags & EIP93_PE_OPTION_SHA_224))
+			continue;
+
+		if (IS_HASH_SHA256(alg_flags) &&
+		    !(supported_algo_flags & EIP93_PE_OPTION_SHA_256))
+			continue;
 
 		switch (mtk_algs[i]->type) {
 		case MTK_ALG_TYPE_SKCIPHER:
@@ -360,7 +396,7 @@ static int mtk_crypto_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct mtk_device *mtk;
-	struct resource *res;
+	u32 ver, algo_flags;
 	int ret;
 
 	mtk = devm_kzalloc(dev, sizeof(*mtk), GFP_KERNEL);
@@ -370,14 +406,11 @@ static int mtk_crypto_probe(struct platform_device *pdev)
 	mtk->dev = dev;
 	platform_set_drvdata(pdev, mtk);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	mtk->base = devm_ioremap_resource(&pdev->dev, res);
-
+	mtk->base = devm_platform_ioremap_resource(&pdev->dev, 0);
 	if (IS_ERR(mtk->base))
 		return PTR_ERR(mtk->base);
 
 	mtk->irq = platform_get_irq(pdev, 0);
-
 	if (mtk->irq < 0)
 		return mtk->irq;
 
@@ -386,7 +419,6 @@ static int mtk_crypto_probe(struct platform_device *pdev)
 					dev_name(mtk->dev), mtk);
 
 	mtk->ring = devm_kcalloc(mtk->dev, 1, sizeof(*mtk->ring), GFP_KERNEL);
-
 	if (!mtk->ring)
 		return -ENOMEM;
 
@@ -409,13 +441,21 @@ static int mtk_crypto_probe(struct platform_device *pdev)
 	/* Init finished, enable RDR interrupt */
 	mtk_irq_enable(mtk, EIP93_INT_RDR_THRESH);
 
-	ret = mtk_register_algs(mtk);
+	algo_flags = readl(mtk->base, mtk->base + EIP93_REG_PE_OPTION_1);
+	ret = mtk_register_algs(mtk, algo_flags);
 	if (ret) {
 		mtk_cleanup(mtk);
 		return ret;
 	}
 
-	dev_info(mtk->dev, "EIP93 Crypto Engine Initialized.");
+	ver = readl(mtk->base, mtk->base + EIP93_REG_PE_REVISION);
+	/* EIP_EIP_NO:MAJOR_HW_REV:MINOR_HW_REV:HW_PATCH,PE(ALGO_FLAGS) */
+	dev_info(mtk->dev, "EIP%d:%x:%x:%x,PE(%x)\n",
+		 FIELD_GET(EIP93_PE_REVISION_EIP_NO, ver),
+		 FIELD_GET(EIP93_PE_REVISION_MAJ_HW_REV, ver),
+		 FIELD_GET(EIP93_PE_REVISION_MIN_HW_REV, ver),
+		 FIELD_GET(EIP93_PE_REVISION_HW_PATCH, ver),
+		 algo_flags);
 
 	return 0;
 }
