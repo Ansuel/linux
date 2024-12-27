@@ -16,6 +16,10 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
+#include <net/dsa.h>
+#include <net/pkt_cls.h>
+
+#include "mtk_ppe.h"
 
 #define AIROHA_NPU_NUM_CORES		8
 #define AIROHA_MAX_NUM_GDM_PORTS	1
@@ -51,8 +55,10 @@
 #define PPE_SRAM_NUM_ENTRIES		(16 * 1024)
 #define PPE_DRAM_NUM_ENTRIES		(16 * 1024)
 #define PPE_NUM_ENTRIES			(PPE_SRAM_NUM_ENTRIES + PPE_DRAM_NUM_ENTRIES)
+#define PPE_HASH_MASK			(PPE_NUM_ENTRIES - 1)
 #define PPE_EN7581_ENTRY_SIZE		80
 #define PPE_EN7581_DRAM_OFFSET		(PPE_EN7581_ENTRY_SIZE * PPE_SRAM_NUM_ENTRIES)
+#define PPE_EN7581_HASH_OFFSET		1
 
 enum {
 	QDMA_INT_REG_IDX0,
@@ -287,6 +293,132 @@ struct ppe_mbox_data {
 	};
 };
 
+#define AIROHA_FOE_MAC_DATA_PPPOE_ID	GENMASK(15, 0)
+#define AIROHA_FOE_MAC_DATA_SMAC_ID	GENMASK(20, 16)
+
+struct airoha_foe_mac_info {
+	u16 vlan1;
+	u16 etype;
+
+	u32 dest_mac_hi;
+
+	u16 vlan2;
+	u16 dest_mac_lo;
+
+	union {
+		u32 src_mac_hi;
+		u32 data;
+	};
+
+	u16 pppoe_id;
+	u16 src_mac_lo;
+};
+
+#define AIROHA_FOE_IB2_NBQ		GENMASK(4, 0)
+#define AIROHA_FOE_IB2_PSE_PORT		GENMASK(8, 5)
+#define AIROHA_FOE_IB2_PSE_QOS		BIT(9)
+#define AIROHA_FOE_IB2_FAST_PATH	BIT(10)
+#define AIROHA_FOE_IB2_MULTICAST	BIT(11)
+#define AIROHA_FOE_IB2_PCP		BIT(12)
+#define AIROHA_FOE_IB2_PORT_AG		GENMASK(23, 13)
+#define AIROHA_FOE_IB2_DSCP		GENMASK(31, 24)
+
+#define AIORHA_FOE_UDF_TS_ID		GENMASK(23, 16)
+
+struct airoha_foe_bridge {
+	u32 dest_mac_hi;
+
+	u16 src_mac_hi;
+	u16 dest_mac_lo;
+
+	u32 src_mac_lo;
+
+	u32 ib2;
+
+	u32 rsv[5];
+	u32 udf;
+
+	struct airoha_foe_mac_info l2;
+};
+
+struct airoha_foe_ipv4 {
+	struct mtk_ipv4_tuple orig_tuple;
+
+	u32 ib2;
+
+	struct mtk_ipv4_tuple new_tuple;
+
+	u32 rsv0[2];
+	u32 udf;
+
+	struct airoha_foe_mac_info l2;
+
+	u32 rsv1[4];
+};
+
+struct airoha_foe_ipv4_dslite {
+	struct mtk_ipv4_tuple ip4;
+
+	u32 ib2;
+
+	u8 flow_label[3];
+	u8 priority;
+
+	u32 rsv0[4];
+	u32 udf;
+
+	struct airoha_foe_mac_info l2;
+
+	u32 rsv1[4];
+};
+
+struct airoha_foe_ipv6 {
+	u32 src_ip[4];
+	u32 dest_ip[4];
+
+	union {
+		struct {
+			u16 dest_port;
+			u16 src_port;
+		};
+		struct {
+			u8 protocol;
+			u8 pad[3];
+		};
+		u32 ports;
+	};
+
+	u32 udf;
+
+	u32 ib2;
+
+	struct airoha_foe_mac_info l2;
+
+	u32 rsv[3];
+};
+
+struct airoha_foe_entry {
+	u32 ib1;
+
+	union {
+		struct airoha_foe_bridge bridge;
+		struct airoha_foe_ipv4 ipv4;
+		struct airoha_foe_ipv4_dslite dslite;
+		struct airoha_foe_ipv6 ipv6;
+		u32 data[20];
+	};
+};
+
+struct airoha_flow_table_entry {
+	struct hlist_node list;
+
+	struct airoha_foe_entry data;
+	u32 hash;
+
+	struct rhash_head node;
+	unsigned long cookie;
+};
+
 struct airoha_qdma {
 	struct airoha_eth *eth;
 	void __iomem *regs;
@@ -335,11 +467,17 @@ struct airoha_npu {
 	} cores[AIROHA_NPU_NUM_CORES];
 };
 
+#define AIROHA_RXD4_FOE_ENTRY		GENMASK(15, 0)
+#define AIROHA_RXD4_PPE_CPU_REASON	GENMASK(20, 16)
+
 struct airoha_ppe {
 	struct airoha_eth *eth;
 
 	void *foe;
 	dma_addr_t foe_dma;
+
+	struct hlist_head *foe_flow;
+	u16 foe_check_time[PPE_NUM_ENTRIES];
 };
 
 struct airoha_eth {
@@ -350,6 +488,7 @@ struct airoha_eth {
 
 	struct airoha_npu *npu;
 	struct airoha_ppe *ppe;
+	struct rhashtable flow_table;
 
 	struct reset_control_bulk_data rsts[AIROHA_MAX_NUM_RSTS];
 	struct reset_control_bulk_data xsi_rsts[AIROHA_MAX_NUM_XSI_RSTS];
@@ -386,6 +525,10 @@ u32 airoha_rmw(void __iomem *base, u32 offset, u32 mask, u32 val);
 #define airoha_qdma_clear(qdma, offset, val)			\
 	airoha_rmw((qdma)->regs, (offset), (val), 0)
 
+void airoha_ppe_check_skb(struct airoha_ppe *ppe, struct sk_buff *skb,
+			  u16 hash);
+int airoha_ppe_setup_tc_block_cb(enum tc_setup_type type, void *type_data,
+				 void *cb_priv);
 int airoha_ppe_init(struct airoha_eth *eth);
 void airoha_ppe_deinit(struct airoha_eth *eth);
 
