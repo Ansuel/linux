@@ -4,9 +4,11 @@
  * Author: Lorenzo Bianconi <lorenzo@kernel.org>
  */
 #include <linux/tcp.h>
+#include <linux/pcs/pcs-airoha.h>
 #include <linux/u64_stats_sync.h>
 #include <net/page_pool/helpers.h>
 #include <uapi/linux/ppp_defs.h>
+#include <linux/regmap.h>
 
 #include "airoha_regs.h"
 #include "airoha_eth.h"
@@ -1545,6 +1547,17 @@ static int airoha_dev_open(struct net_device *dev)
 	struct airoha_qdma *qdma = port->qdma;
 	int err;
 
+	if (port->type != INTERNAL_SWITCH_PORT) {
+		err = phylink_of_phy_connect(port->phylink, dev->dev.of_node, 0);
+		if (err) {
+			netdev_err(dev, "%s: could not attach PHY: %d\n", __func__,
+				   err);
+			return err;
+		}
+
+		phylink_start(port->phylink);
+	}
+
 	netif_tx_start_all_queues(dev);
 	err = airoha_set_gdm_port(qdma->eth, port->type, true);
 	if (err)
@@ -1588,19 +1601,34 @@ static int airoha_dev_stop(struct net_device *dev)
 		netdev_tx_reset_subqueue(dev, i);
 	}
 
+	if (port->type != INTERNAL_SWITCH_PORT)
+		phylink_stop(port->phylink);
+
 	return 0;
 }
 
 static int airoha_dev_set_macaddr(struct net_device *dev, void *p)
 {
 	struct airoha_gdm_port *port = netdev_priv(dev);
+	const u8 *mac_addr = dev->dev_addr;
 	int err;
 
 	err = eth_mac_addr(dev, p);
 	if (err)
 		return err;
 
-	airoha_set_macaddr(port, dev->dev_addr);
+	airoha_set_macaddr(port, mac_addr);
+
+	/* Update XFI mac address */
+	if (port->type != INTERNAL_SWITCH_PORT) {
+		regmap_write(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_MACADDRL,
+			     FIELD_PREP(AIROHA_PCS_XFI_MAC_MACADDRL,
+					mac_addr[0] << 24 | mac_addr[1] << 16 |
+					mac_addr[2] << 8 | mac_addr[3]));
+		regmap_write(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_MACADDRH,
+			     FIELD_PREP(AIROHA_PCS_XFI_MAC_MACADDRH,
+					mac_addr[4] << 8 | mac_addr[5]));
+	}
 
 	return 0;
 }
@@ -2275,6 +2303,198 @@ static const struct ethtool_ops airoha_ethtool_ops = {
 	.get_rmon_stats		= airoha_ethtool_get_rmon_stats,
 };
 
+static struct phylink_pcs *airoha_phylink_mac_select_pcs(struct phylink_config *config,
+							 phy_interface_t interface)
+{
+	struct airoha_gdm_port *port = container_of(config, struct airoha_gdm_port,
+						    phylink_config);
+
+	return port->pcs;
+}
+
+static void airoha_mac_config(struct phylink_config *config, unsigned int mode,
+			      const struct phylink_link_state *state)
+{
+	struct airoha_gdm_port *port = container_of(config, struct airoha_gdm_port,
+						    phylink_config);
+	
+	/* Frag disable */
+	regmap_update_bits(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
+			   AIROHA_PCS_XFI_RX_FRAG_LEN,
+			   FIELD_PREP(AIROHA_PCS_XFI_RX_FRAG_LEN, 31));
+	regmap_update_bits(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
+			   AIROHA_PCS_XFI_TX_FRAG_LEN,
+			   FIELD_PREP(AIROHA_PCS_XFI_TX_FRAG_LEN, 31));
+
+	/* IPG NUM */
+	regmap_update_bits(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
+			   AIROHA_PCS_XFI_IPG_NUM,
+			   FIELD_PREP(AIROHA_PCS_XFI_IPG_NUM, 10));
+
+	/* Enable TX/RX flow control */
+	regmap_set_bits(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
+			AIROHA_PCS_XFI_TX_FC_EN);
+	regmap_set_bits(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
+			AIROHA_PCS_XFI_RX_FC_EN);
+
+	return;
+}
+
+static int airoha_mac_prepare(struct phylink_config *config, unsigned int mode,
+			      phy_interface_t iface)
+{
+	struct airoha_gdm_port *port = container_of(config, struct airoha_gdm_port,
+						    phylink_config);
+
+	//fe protect
+	/* MPI MBI disable */
+	regmap_set_bits(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
+			AIROHA_PCS_XFI_RXMPI_STOP |
+			AIROHA_PCS_XFI_RXMBI_STOP |
+			AIROHA_PCS_XFI_TXMPI_STOP |
+			AIROHA_PCS_XFI_TXMBI_STOP);
+
+	/* Write 1 to trigger reset and clear */
+	regmap_clear_bits(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_LOGIC_RST,
+			  AIROHA_PCS_XFI_MAC_LOGIC_RST);
+	regmap_set_bits(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_LOGIC_RST,
+			AIROHA_PCS_XFI_MAC_LOGIC_RST);
+
+	msleep(1);
+
+	/* Clear XFI MAC counter */
+	regmap_set_bits(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_CNT_CLR,
+			AIROHA_PCS_XFI_GLB_CNT_CLR);
+
+	return 0;
+}
+
+static void airoha_mac_link_down(struct phylink_config *config, unsigned int mode,
+			      phy_interface_t interface)
+{
+	struct airoha_gdm_port *port = container_of(config, struct airoha_gdm_port,
+						    phylink_config);
+
+	/* MPI MBI disable */
+	regmap_set_bits(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
+			AIROHA_PCS_XFI_RXMPI_STOP |
+			AIROHA_PCS_XFI_RXMBI_STOP |
+			AIROHA_PCS_XFI_TXMPI_STOP |
+			AIROHA_PCS_XFI_TXMBI_STOP);
+
+	return;
+}
+
+static void airoha_mac_link_up(struct phylink_config *config,
+			    struct phy_device *phy,
+			    unsigned int mode, phy_interface_t interface,
+			    int speed, int duplex, bool tx_pause, bool rx_pause)
+{
+	struct airoha_gdm_port *port = container_of(config, struct airoha_gdm_port,
+						    phylink_config);
+	struct airoha_qdma *qdma = port->qdma;
+	struct airoha_eth *eth = qdma->eth;
+	u32 frag_size_tx, frag_size_rx;
+
+	switch(speed) {
+	case SPEED_10000:
+	case SPEED_5000:
+		frag_size_tx = 8;
+		frag_size_rx = 8;
+		break;
+	case SPEED_2500:
+		frag_size_tx = 2;
+		frag_size_rx = 1;
+		break;
+	default:
+		frag_size_tx = 1;
+		frag_size_rx = 0;
+	}
+
+	/* Configure TX/RX frag based on speed */
+	airoha_fe_rmw(eth, REG_GDMA4_TMBI_FRAG, GDMA4_SGMII0_TX_FRAG_SIZE,
+		      FIELD_PREP(GDMA4_SGMII0_TX_FRAG_SIZE, frag_size_tx));
+
+	airoha_fe_rmw(eth, REG_GDMA4_RMBI_FRAG, GDMA4_SGMII0_RX_FRAG_SIZE,
+		      FIELD_PREP(GDMA4_SGMII0_RX_FRAG_SIZE, frag_size_rx));
+
+	/* BPI BMI enable */
+	regmap_clear_bits(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
+			  AIROHA_PCS_XFI_RXMPI_STOP |
+			  AIROHA_PCS_XFI_RXMBI_STOP |
+			  AIROHA_PCS_XFI_TXMPI_STOP |
+			  AIROHA_PCS_XFI_TXMBI_STOP);
+
+	return;
+}
+
+static const struct phylink_mac_ops airoha_phylink_ops = {
+	.mac_select_pcs = airoha_phylink_mac_select_pcs,
+	.mac_config = airoha_mac_config,
+	.mac_prepare = airoha_mac_prepare,
+	.mac_link_down = airoha_mac_link_down,
+	.mac_link_up = airoha_mac_link_up,
+};
+
+static int airoha_setup_phylink(struct net_device *dev) {
+	struct device_node *pcs_np, *np = dev->dev.of_node;
+	struct airoha_gdm_port *port = netdev_priv(dev);
+	struct platform_device *pdev;
+	phy_interface_t phy_mode;
+	struct phylink *phylink;
+	int err;
+
+	err = of_get_phy_mode(np, &phy_mode);
+	if (err) {
+		dev_err(&dev->dev, "incorrect phy-mode\n");
+		return err;
+	}
+
+	pcs_np = of_parse_phandle(np, "pcs", 0);
+	if (!pcs_np)
+		return -ENODEV;
+
+	if (!of_device_is_available(pcs_np)) {
+		of_node_put(pcs_np);
+		return -ENODEV;
+	}
+
+	pdev = of_find_device_by_node(pcs_np);
+	of_node_put(pcs_np);
+	if (!pdev || !platform_get_drvdata(pdev)) {
+		if (pdev)
+			put_device(&pdev->dev);
+		return -EPROBE_DEFER;
+	}
+
+	port->xfi_mac = dev_get_regmap(&pdev->dev, "xfi_mac");
+	if (IS_ERR(port->xfi_mac))
+		return PTR_ERR(port->xfi_mac);
+
+	port->phylink_config.dev = &dev->dev;
+	port->phylink_config.type = PHYLINK_NETDEV;
+	port->phylink_config.mac_capabilities = MAC_ASYM_PAUSE | MAC_SYM_PAUSE |
+						MAC_10 | MAC_100 | MAC_1000 | MAC_2500FD |
+						MAC_5000FD | MAC_10000FD;
+
+	__set_bit(PHY_INTERFACE_MODE_USXGMII,
+		  port->phylink_config.supported_interfaces);
+
+	port->pcs = airoha_pcs_create(&dev->dev);
+	if (IS_ERR(port->pcs))
+		return PTR_ERR(port->pcs);
+
+	phylink = phylink_create(&port->phylink_config,
+				 of_fwnode_handle(np),
+				 phy_mode, &airoha_phylink_ops);
+	if (IS_ERR(phylink))
+		return PTR_ERR(phylink);
+
+	port->phylink = phylink;
+
+	return 0;
+}
+
 static int airoha_alloc_gdm_port(struct airoha_eth *eth, struct device_node *np)
 {
 	const __be32 *id_ptr = of_get_property(np, "reg", NULL);
@@ -2347,6 +2567,23 @@ static int airoha_alloc_gdm_port(struct airoha_eth *eth, struct device_node *np)
 	port->id = id;
 	port->type = airoha_get_gdm_port_type(port);
 	eth->ports[index] = port;
+
+	if (port->type != INTERNAL_SWITCH_PORT) {
+		const u8 *mac_addr = dev->dev_addr;
+
+		err = airoha_setup_phylink(dev);
+		if (err)
+			return err;
+
+		/* Setup XFI mac address */
+		regmap_write(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_MACADDRL,
+			     FIELD_PREP(AIROHA_PCS_XFI_MAC_MACADDRL,
+					mac_addr[0] << 24 | mac_addr[1] << 16 |
+					mac_addr[2] << 8 | mac_addr[3]));
+		regmap_write(port->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_MACADDRH,
+			     FIELD_PREP(AIROHA_PCS_XFI_MAC_MACADDRH,
+					mac_addr[4] << 8 | mac_addr[5]));
+	}
 
 	return register_netdev(dev);
 }
@@ -2442,6 +2679,11 @@ error_hw_cleanup:
 
 		if (port && port->dev->reg_state == NETREG_REGISTERED)
 			unregister_netdev(port->dev);
+
+		if (port->type != INTERNAL_SWITCH_PORT) {
+			phylink_destroy(port->phylink);
+			airoha_pcs_destroy(port->pcs);
+		}
 	}
 	free_netdev(eth->napi_dev);
 	platform_set_drvdata(pdev, NULL);
@@ -2467,6 +2709,11 @@ static void airoha_remove(struct platform_device *pdev)
 
 		airoha_dev_stop(port->dev);
 		unregister_netdev(port->dev);
+
+		if (port->type != INTERNAL_SWITCH_PORT) {
+			phylink_destroy(port->phylink);
+			airoha_pcs_destroy(port->pcs);
+		}
 	}
 	free_netdev(eth->napi_dev);
 
