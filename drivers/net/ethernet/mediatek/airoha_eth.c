@@ -159,9 +159,13 @@ static int airoha_set_gdm_port(struct airoha_eth *eth,
 
 static void airoha_fe_maccr_init(struct airoha_eth *eth)
 {
+	unsigned int long_frame_size = 4004;
 	int p;
 
 	for (p = 1; p <= ARRAY_SIZE(eth->ports); p++) {
+		if (p > 2)
+			long_frame_size = 2000;
+
 		airoha_fe_set(eth, REG_GDM_FWD_CFG(p),
 			      GDM_TCP_CKSUM | GDM_UDP_CKSUM | GDM_IP4_CKSUM |
 			      GDM_DROP_CRC_ERR);
@@ -170,7 +174,7 @@ static void airoha_fe_maccr_init(struct airoha_eth *eth)
 		airoha_fe_rmw(eth, REG_GDM_LEN_CFG(p),
 			      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
 			      FIELD_PREP(GDM_SHORT_LEN_MASK, 60) |
-			      FIELD_PREP(GDM_LONG_LEN_MASK, 4004));
+			      FIELD_PREP(GDM_LONG_LEN_MASK, long_frame_size));
 	}
 
 	airoha_fe_rmw(eth, REG_CDM1_VLAN_CTRL, CDM1_VLAN_MASK,
@@ -542,6 +546,9 @@ static int airoha_fe_init(struct airoha_eth *eth)
 
 	airoha_fe_set(eth, REG_GDM_FWD_CFG(3), GDM_PAD_EN);
 	airoha_fe_set(eth, REG_GDM_FWD_CFG(4), GDM_PAD_EN);
+
+	airoha_fe_set(eth, REG_GDM_FWD_CFG(3), GDM_STRIP_CRC);
+	airoha_fe_set(eth, REG_GDM_FWD_CFG(4), GDM_STRIP_CRC);
 
 	airoha_fe_crsn_qsel_init(eth);
 
@@ -1543,7 +1550,8 @@ static int airoha_dev_open(struct net_device *dev)
 	if (err)
 		return err;
 
-	if (netdev_uses_dsa(dev))
+	/* It seems GDM3 and GDM4 needs SPORT enabled to correctly work */
+	if (netdev_uses_dsa(dev) || port->id > 2)
 		airoha_fe_set(qdma->eth, REG_GDM_INGRESS_CFG(port->id),
 			      GDM_STAG_EN_MASK);
 	else
