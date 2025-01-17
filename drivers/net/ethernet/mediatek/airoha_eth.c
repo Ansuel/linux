@@ -1589,9 +1589,11 @@ static int airoha_dev_stop(struct net_device *dev)
 	if (err)
 		return err;
 
+	/* TODO don't stop as GDM4 use it
 	airoha_qdma_clear(qdma, REG_QDMA_GLOBAL_CFG,
 			  GLOBAL_CFG_TX_DMA_EN_MASK |
 			  GLOBAL_CFG_RX_DMA_EN_MASK);
+	*/
 
 	for (i = 0; i < ARRAY_SIZE(qdma->q_tx); i++) {
 		if (!qdma->q_tx[i].ndesc)
@@ -2530,7 +2532,9 @@ static int airoha_alloc_gdm_port(struct airoha_eth *eth, struct device_node *np)
 		return -ENOMEM;
 	}
 
-	qdma = &eth->qdma[index % AIROHA_MAX_NUM_QDMA];
+	// qdma = &eth->qdma[index % AIROHA_MAX_NUM_QDMA];
+	/* TODO Force QDMA1 as GDM4 use QDMA1 instead of QDMA2 */
+	qdma = &eth->qdma[0];
 	dev->netdev_ops = &airoha_netdev_ops;
 	dev->ethtool_ops = &airoha_ethtool_ops;
 	dev->max_mtu = AIROHA_MAX_MTU;
