@@ -5,6 +5,12 @@
 
 menu "PCS device drivers"
 
+config PCS_AIROHA
+	tristate "Airoha PCS driver"
+	help
+	  This module provides helper to phylink for managing the Airoha
+	  PCS for SoC Ethernet SERDES.
+
 config PCS_XPCS
 	tristate "Synopsys DesignWare Ethernet XPCS"
 	select PHYLINK
