@@ -540,8 +540,8 @@ static int airoha_fe_init(struct airoha_eth *eth)
 		      FIELD_PREP(IP_ASSEMBLE_PORT_MASK, 0) |
 		      FIELD_PREP(IP_ASSEMBLE_NBQ_MASK, 22));
 
-	airoha_fe_set(eth, REG_GDM3_FWD_CFG, GDM3_PAD_EN_MASK);
-	airoha_fe_set(eth, REG_GDM4_FWD_CFG, GDM4_PAD_EN_MASK);
+	airoha_fe_set(eth, REG_GDM_FWD_CFG(3), GDM_PAD_EN);
+	airoha_fe_set(eth, REG_GDM_FWD_CFG(4), GDM_PAD_EN);
 
 	airoha_fe_crsn_qsel_init(eth);
 

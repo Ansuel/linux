@@ -120,6 +120,7 @@
 	GENMASK(4 + (((_n) % 4) << 3),	(((_n) % 4) << 3))
 
 #define REG_GDM_FWD_CFG(_n)		GDM_BASE(_n)
+#define GDM_PAD_EN			BIT(28)
 #define GDM_DROP_CRC_ERR		BIT(23)
 #define GDM_IP4_CKSUM			BIT(22)
 #define GDM_TCP_CKSUM			BIT(21)
@@ -245,13 +246,6 @@
 #define REG_GDM2_CHN_RLS		(GDM2_BASE + 0x20)
 #define MBI_RX_AGE_SEL_MASK		GENMASK(26, 25)
 #define MBI_TX_AGE_SEL_MASK		GENMASK(18, 17)
-
-#define REG_GDM3_FWD_CFG		GDM3_BASE
-#define GDM3_PAD_EN_MASK		BIT(28)
-
-#define REG_GDM4_FWD_CFG		GDM4_BASE
-#define GDM4_PAD_EN_MASK		BIT(28)
-#define GDM4_SPORT_OFFSET0_MASK		GENMASK(11, 8)
 
 #define REG_GDM4_SRC_PORT_SET		(GDM4_BASE + 0x23c)
 #define GDM4_SPORT_OFF2_MASK		GENMASK(19, 16)
