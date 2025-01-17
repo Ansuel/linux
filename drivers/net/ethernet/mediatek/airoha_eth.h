@@ -69,12 +69,14 @@ enum {
 	QDMA_INT_REG_MAX
 };
 
-enum {
+enum airoha_gdm_port_type {
 	XSI_PCIE0_PORT,
 	XSI_PCIE1_PORT,
 	XSI_USB_PORT,
 	XSI_AE_PORT,
 	XSI_ETH_PORT,
+
+	INTERNAL_SWITCH_PORT,
 };
 
 enum {
@@ -441,6 +443,7 @@ struct airoha_qdma {
 };
 
 struct airoha_gdm_port {
+	enum airoha_gdm_port_type type;
 	struct airoha_qdma *qdma;
 	struct net_device *dev;
 	int id;
